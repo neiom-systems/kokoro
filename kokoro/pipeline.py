@@ -18,6 +18,8 @@ ALIASES = {
     'pt-br': 'p',
     'ja': 'j',
     'zh': 'z',
+    'lb': 'l',  # Luxembourgish
+    'luxembourgish': 'l',
 }
 
 LANG_CODES = dict(
@@ -37,6 +39,9 @@ LANG_CODES = dict(
 
     # pip install misaki[zh]
     z='Mandarin Chinese',
+    
+    # Luxembourgish - custom misaki implementation
+    l='Luxembourgish',
 )
 
 class KPipeline:
@@ -137,6 +142,15 @@ class KPipeline:
                 )
             except ImportError:
                 logger.error("You need to `pip install misaki[zh]` to use lang_code='z'")
+                raise
+        elif lang_code == 'l':
+            # Luxembourgish - using custom misaki implementation
+            try:
+                from misaki import lb
+                self.g2p = lb.LBG2P()
+                logger.info("Using Luxembourgish G2P with custom Luxembourgish dictionary")
+            except ImportError as e:
+                logger.error(f"You need to install the custom misaki fork (https://github.com/neiom-systems/misaki) to use lang_code='l'. Error: {e}")
                 raise
         else:
             language = LANG_CODES[lang_code]

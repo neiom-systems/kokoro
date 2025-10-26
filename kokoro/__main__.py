@@ -30,6 +30,7 @@ languages = [
     "p",  # Brazilian Portuguese
     "j",  # Japanese
     "z",  # Mandarin Chinese
+    "l",  # Luxembourgish
 ]
 
 if TYPE_CHECKING:
