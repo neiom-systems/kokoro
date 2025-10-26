@@ -6,7 +6,9 @@ import random
 import torch
 
 CUDA_AVAILABLE = torch.cuda.is_available()
-models = {gpu: KModel().to('cuda' if gpu else 'cpu').eval() for gpu in [False] + ([True] if CUDA_AVAILABLE else [])}
+MPS_AVAILABLE = torch.backends.mps.is_available() and os.environ.get('PYTORCH_ENABLE_MPS_FALLBACK') == '1'
+device = 'cuda' if CUDA_AVAILABLE else ('mps' if MPS_AVAILABLE else 'cpu')
+models = {gpu: KModel().to(device if gpu else 'cpu').eval() for gpu in [False] + ([True] if (CUDA_AVAILABLE or MPS_AVAILABLE) else [])}
 pipelines = {lang_code: KPipeline(lang_code=lang_code, model=False) for lang_code in 'ab'}
 pipelines['a'].g2p.lexicon.golds['kokoro'] = 'kˈOkəɹO'
 pipelines['b'].g2p.lexicon.golds['kokoro'] = 'kˈQkəɹQ'
@@ -15,10 +17,10 @@ pipelines['b'].g2p.lexicon.golds['kokoro'] = 'kˈQkəɹQ'
 def forward_gpu(ps, ref_s, speed):
     return models[True](ps, ref_s, speed)
 
-def generate_first(text, voice='af_heart', speed=1, use_gpu=CUDA_AVAILABLE):
+def generate_first(text, voice='af_heart', speed=1, use_gpu=(CUDA_AVAILABLE or MPS_AVAILABLE)):
     pipeline = pipelines[voice[0]]
     pack = pipeline.load_voice(voice)
-    use_gpu = use_gpu and CUDA_AVAILABLE
+    use_gpu = use_gpu and (CUDA_AVAILABLE or MPS_AVAILABLE)
     for _, ps, _ in pipeline(text, voice, speed):
         ref_s = pack[len(ps)-1]
         try:
@@ -46,10 +48,10 @@ def tokenize_first(text, voice='af_heart'):
         return ps
     return ''
 
-def generate_all(text, voice='af_heart', speed=1, use_gpu=CUDA_AVAILABLE):
+def generate_all(text, voice='af_heart', speed=1, use_gpu=(CUDA_AVAILABLE or MPS_AVAILABLE)):
     pipeline = pipelines[voice[0]]
     pack = pipeline.load_voice(voice)
-    use_gpu = use_gpu and CUDA_AVAILABLE
+    use_gpu = use_gpu and (CUDA_AVAILABLE or MPS_AVAILABLE)
     first = True
     for _, ps, _ in pipeline(text, voice, speed):
         ref_s = pack[len(ps)-1]
@@ -155,12 +157,13 @@ with gr.Blocks() as app:
             text = gr.Textbox(label='Input Text', info=f"Arbitrarily many characters supported")
             with gr.Row():
                 voice = gr.Dropdown(list(CHOICES.items()), value='af_heart', label='Voice', info='Quality and availability vary by language')
+                gpu_label = 'ZeroGPU 🚀' if CUDA_AVAILABLE else ('Apple GPU 🍎' if MPS_AVAILABLE else 'CPU 🐌')
                 use_gpu = gr.Dropdown(
-                    [('ZeroGPU 🚀', True), ('CPU 🐌', False)],
-                    value=CUDA_AVAILABLE,
+                    [(gpu_label, True), ('CPU 🐌', False)],
+                    value=(CUDA_AVAILABLE or MPS_AVAILABLE),
                     label='Hardware',
-                    info='GPU is usually faster, but has a usage quota',
-                    interactive=CUDA_AVAILABLE
+                    info='GPU/MPS is usually faster than CPU',
+                    interactive=(CUDA_AVAILABLE or MPS_AVAILABLE)
                 )
             speed = gr.Slider(minimum=0.5, maximum=2, value=1, step=0.1, label='Speed')
             random_btn = gr.Button('🎲 Random Quote 💬', variant='secondary')
