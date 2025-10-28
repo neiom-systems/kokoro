@@ -43,10 +43,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-PHONEME_SUBSTITUTIONS: Dict[str, Optional[Sequence[str]]] = {
+PHONEME_SUBSTITUTIONS: Dict[str, Sequence[str]] = {
     "ʀ": ("r",),
     "ɐ": ("ə",),
-    "❓": (),
+    "❓": tuple(),
 }
 
 _TORCHAUDIO_TRANSFORMS: Dict[Tuple[int, int, int, int, int, float, float, str], "torchaudio.transforms.MelSpectrogram"] = {}
@@ -56,7 +56,25 @@ def _map_symbol(symbol: str) -> Iterable[str]:
     mapping = PHONEME_SUBSTITUTIONS.get(symbol)
     if mapping is None:
         return (symbol,)
-    return tuple(mapping)
+    return mapping
+
+
+def normalize_phoneme_tokens(tokens: Sequence[str]) -> List[str]:
+    symbols: List[str] = []
+    for token in tokens:
+        if not token:
+            continue
+        normalized = unicodedata.normalize("NFD", token)
+        for ch in normalized:
+            if unicodedata.category(ch) == "Mn":
+                continue
+            symbols.append(ch)
+    phonemes: List[str] = []
+    for symbol in symbols:
+        for mapped in _map_symbol(symbol):
+            if mapped:
+                phonemes.append(mapped)
+    return phonemes
 
 
 @dataclass(slots=True)
@@ -100,6 +118,7 @@ class FeatureExtractionConfig:
     voice_table_rows: int = 510
     vocab_path: Path = Path("base_model/config.json")
     require_alignments: bool = True
+    mel_device: Optional[str] = None
     mel_device: Optional[str] = None
 
 
@@ -369,6 +388,8 @@ class FeatureExtractor:
         self.phonemizer = phonemizer or LuxembourgishPhonemizer()
         device_str = cfg.mel_device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(device_str)
+        device_str = cfg.mel_device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device_str)
 
     def process(
         self,
@@ -389,19 +410,7 @@ class FeatureExtractor:
         phoneme_tokens = self.phonemizer(text)
         if not phoneme_tokens:
             raise ValueError("Empty phoneme sequence")
-        # Split phoneme strings into individual symbols and remove combining marks
-        symbols: List[str] = []
-        for token in phoneme_tokens:
-            if not token:
-                continue
-            normalized = unicodedata.normalize("NFD", token)
-            for ch in normalized:
-                if unicodedata.category(ch) == "Mn":
-                    continue
-                symbols.append(ch)
-        phonemes: List[str] = []
-        for symbol in symbols:
-            phonemes.extend(_map_symbol(symbol))
+        phonemes = normalize_phoneme_tokens(phoneme_tokens)
         if not phonemes:
             raise ValueError("Phoneme normalization produced an empty sequence")
         if len(phonemes) > self.cfg.max_phoneme_tokens:
@@ -623,5 +632,7 @@ __all__ = [
     "FeatureExtractionConfig",
     "FeatureExtractor",
     "ExtractionSummary",
+    "normalize_phoneme_tokens",
+    "read_metadata",
     "run_split_extraction",
 ]

@@ -8,7 +8,7 @@ import os
 import json
 import logging
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 from kokoro.training import (
     FeatureExtractionConfig,
@@ -18,12 +18,17 @@ from kokoro.training import (
 )
 
 
-def configure_feature_extractor(cfg: TrainingConfig, require_alignments: bool) -> FeatureExtractor:
+def configure_feature_extractor(
+    cfg: TrainingConfig,
+    require_alignments: bool,
+    mel_device: Optional[str] = None,
+) -> FeatureExtractor:
     feature_cfg = FeatureExtractionConfig(require_alignments=require_alignments)
     feature_cfg.max_phoneme_tokens = cfg.data.max_input_len
     feature_cfg.mel.sample_rate = cfg.data.sample_rate
     feature_cfg.mel.hop_length = cfg.data.hop_length
     feature_cfg.vocab_path = cfg.paths.config_json
+    feature_cfg.mel_device = mel_device
 
     try:
         with open(cfg.paths.config_json, "r", encoding="utf-8") as handle:
@@ -120,6 +125,11 @@ def parse_args() -> argparse.Namespace:
         default=max(1, (os.cpu_count() or 4) // 2),
         help="Number of parallel workers for feature extraction",
     )
+    parser.add_argument(
+        "--mel-device",
+        default=None,
+        help="Device for mel spectrogram computation (e.g. cuda or cpu)",
+    )
     return parser.parse_args()
 
 
@@ -131,7 +141,11 @@ def main() -> None:
     cfg.paths.ensure_directories()
 
     require_alignments = args.require_alignments or args.alignment_root is not None
-    extractor = configure_feature_extractor(cfg, require_alignments=require_alignments)
+    extractor = configure_feature_extractor(
+        cfg,
+        require_alignments=require_alignments,
+        mel_device=args.mel_device,
+    )
 
     for split in args.splits:
         alignment_root = determine_alignment_root(args.alignment_root, split)
