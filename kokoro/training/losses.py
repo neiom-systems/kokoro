@@ -123,14 +123,16 @@ class MelSpectrogramLoss(nn.Module):
         mel_pred = self.transform(prediction)
         mel_pred = torch.log(torch.clamp(mel_pred, min=1e-5))
         mel_tgt = torch.log(torch.clamp(target_mel, min=1e-5))
-        if mel_pred.shape[-1] != mel_tgt.shape[-1]:
-            min_len = min(mel_pred.shape[-1], mel_tgt.shape[-1])
-            mel_pred = mel_pred[..., :min_len]
-            mel_tgt = mel_tgt[..., :min_len]
+        mel_pred = mel_pred.transpose(-2, -1)  # [batch, frames, n_mels]
+        mel_tgt = mel_tgt.transpose(-2, -1) if mel_tgt.shape[1] == mel_pred.shape[-1] else mel_tgt.transpose(-2, -1)
+        if mel_pred.shape[1] != mel_tgt.shape[1]:
+            min_len = min(mel_pred.shape[1], mel_tgt.shape[1])
+            mel_pred = mel_pred[:, :min_len]
+            mel_tgt = mel_tgt[:, :min_len]
             if mask is not None:
                 mask = mask[..., :min_len]
         if mask is not None:
-            valid = mask.float()
+            valid = mask.float().unsqueeze(-1)
             loss = (valid * (mel_pred - mel_tgt).abs()).sum() / valid.sum().clamp(min=1.0)
         else:
             loss = F.l1_loss(mel_pred, mel_tgt)
