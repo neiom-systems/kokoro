@@ -336,6 +336,15 @@ class LossComputer:
             + self.cfg.lambda_stft * (components["stft_sc"] + components["stft_mag"])
         )
         components["total"] = total
+        if "mel_mask" in batch and isinstance(batch["mel_mask"], torch.Tensor):
+            frame_count = batch["mel_mask"].to(device).float().sum()
+        else:
+            mel_tensor = batch.get("mel")
+            if mel_tensor is not None and isinstance(mel_tensor, torch.Tensor):
+                frame_count = torch.tensor(mel_tensor.shape[0] * mel_tensor.shape[-1], device=device, dtype=torch.float32)
+            else:
+                frame_count = torch.tensor(batch["f0"].numel(), device=device, dtype=torch.float32)
+        components["total_normalized"] = total / frame_count.clamp(min=1.0)
         return components
 
 

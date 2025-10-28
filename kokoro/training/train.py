@@ -277,6 +277,7 @@ def train_one_epoch(
 ) -> Tuple[int, float]:
     model.train()
     total_loss = 0.0
+    total_loss_raw = 0.0
     grad_accum = cfg.optim.grad_accum_steps
     log_interval = cfg.runtime.log_interval
     batches_processed = 0
@@ -332,17 +333,20 @@ def train_one_epoch(
             loss = loss_components["total"] / grad_accum
             batch.pop("audio_target", None)
         forward_time = time.time() - forward_start
+        human_total = loss_components.get("total_normalized", loss_components["total"])
         if batch_idx == 1:
             logger.info(
-                "First forward pass complete (%.2fs) | total=%.4f",
+                "First forward pass complete (%.2fs) | loss=%.4f (raw=%.2e)",
                 forward_time,
+                human_total.item(),
                 loss_components["total"].item(),
             )
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                "Train batch %d | total=%.4f dur=%.4f f0=%.4f stft=%.4f",
+                "Train batch %d | loss=%.4f (raw=%.2e) dur=%.4f f0=%.4f stft=%.4f",
                 batch_idx,
+                human_total.item(),
                 loss_components["total"].item(),
                 (loss_components.get("duration_bce", torch.tensor(0.0)) + loss_components.get("duration_l1", torch.tensor(0.0))).item(),
                 loss_components.get("f0", torch.tensor(0.0)).item() if "f0" in loss_components else 0.0,
@@ -382,8 +386,9 @@ def train_one_epoch(
                 ).item()
                 f0_loss = loss_components.get("f0", torch.tensor(0.0)).item()
                 logger.info(
-                    "Step %d | total=%.4f dur=%.4f f0=%.4f stft=%.4f",
+                    "Step %d | loss=%.4f (raw=%.2e) dur=%.4f f0=%.4f stft=%.4f",
                     global_step,
+                    human_total.item(),
                     loss_components["total"].item(),
                     dur_loss,
                     f0_loss,
@@ -392,10 +397,15 @@ def train_one_epoch(
 
                 if writer is not None:
                     for key, value in loss_components.items():
-                        writer.add_scalar(f"train/{key}", value.item(), global_step)
+                        if key == "total_normalized":
+                            writer.add_scalar("train/loss", value.item(), global_step)
+                        else:
+                            writer.add_scalar(f"train/{key}", value.item(), global_step)
+                    writer.add_scalar("train/total_raw", loss_components["total"].item(), global_step)
                     writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
 
-        total_loss += loss_components["total"].item()
+        total_loss += human_total.item()
+        total_loss_raw += loss_components["total"].item()
         batches_processed += 1
 
     if batches_processed and batches_processed % grad_accum != 0:
@@ -412,6 +422,8 @@ def train_one_epoch(
     if denom == 0:
         denom = 1
     avg_loss = total_loss / denom
+    avg_loss_raw = total_loss_raw / denom if denom else float("inf")
+    logger.debug("Average training loss raw=%.2e normalized=%.4f", avg_loss_raw, avg_loss)
     return global_step, avg_loss
 
 
@@ -443,13 +455,15 @@ def evaluate(
             )
             components = compute_loss(loss_fn, output, batch)
             batch.pop("audio_target", None)
+            human_total = components.get("total_normalized", components["total"])
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
-                    "Validation batch | total=%.4f stft=%.4f",
+                    "Validation batch | loss=%.4f (raw=%.2e) stft=%.4f",
+                    human_total.item(),
                     components["total"].item(),
                     (components.get("stft_sc", torch.tensor(0.0)) + components.get("stft_mag", torch.tensor(0.0))).item(),
                 )
-            total_loss += components["total"].item()
+            total_loss += human_total.item()
             total_stft += (components["stft_sc"] + components["stft_mag"]).item()
 
     mean_loss = total_loss / len(val_loader)
