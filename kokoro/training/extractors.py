@@ -36,7 +36,27 @@ try:
 except ImportError:  # pragma: no cover - allow fallback to librosa.pyin
     pyworld = None
 
+try:
+    import torchaudio
+except ImportError:
+    torchaudio = None
+
 logger = logging.getLogger(__name__)
+
+PHONEME_SUBSTITUTIONS: Dict[str, Optional[Sequence[str]]] = {
+    "ʀ": ("r",),
+    "ɐ": ("ə",),
+    "❓": (),
+}
+
+_TORCHAUDIO_TRANSFORMS: Dict[Tuple[int, int, int, int, int, float, float, str], "torchaudio.transforms.MelSpectrogram"] = {}
+
+
+def _map_symbol(symbol: str) -> Iterable[str]:
+    mapping = PHONEME_SUBSTITUTIONS.get(symbol)
+    if mapping is None:
+        return (symbol,)
+    return tuple(mapping)
 
 
 @dataclass(slots=True)
@@ -80,6 +100,7 @@ class FeatureExtractionConfig:
     voice_table_rows: int = 510
     vocab_path: Path = Path("base_model/config.json")
     require_alignments: bool = True
+    mel_device: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -156,8 +177,40 @@ def apply_preemphasis(waveform: np.ndarray, coeff: Optional[float]) -> np.ndarra
     return np.append(waveform[0], waveform[1:] - coeff * waveform[:-1])
 
 
-def compute_mel_spectrogram(audio: np.ndarray, cfg: MelConfig) -> torch.FloatTensor:
+def compute_mel_spectrogram(audio: np.ndarray, cfg: MelConfig, device: Optional[torch.device] = None) -> torch.FloatTensor:
     audio = apply_preemphasis(audio, cfg.preemphasis)
+    if torchaudio is not None:
+        device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+        key = (
+            cfg.sample_rate,
+            cfg.n_fft,
+            cfg.hop_length,
+            cfg.win_length,
+            cfg.n_mels,
+            cfg.mel_fmin,
+            cfg.mel_fmax,
+            device.type,
+        )
+        if key not in _TORCHAUDIO_TRANSFORMS:
+            transform = torchaudio.transforms.MelSpectrogram(
+                sample_rate=cfg.sample_rate,
+                n_fft=cfg.n_fft,
+                hop_length=cfg.hop_length,
+                win_length=cfg.win_length,
+                n_mels=cfg.n_mels,
+                f_min=cfg.mel_fmin,
+                f_max=cfg.mel_fmax,
+                power=1.0,
+            )
+            _TORCHAUDIO_TRANSFORMS[key] = transform.to(device).eval()
+        transform = _TORCHAUDIO_TRANSFORMS[key]
+        tensor = torch.from_numpy(audio).to(device=device, dtype=torch.float32)
+        if tensor.dim() == 1:
+            tensor = tensor.unsqueeze(0)
+        with torch.no_grad():
+            mel = transform(tensor)
+        mel = torch.clamp(mel, min=1e-5).log()
+        return mel.squeeze(0).cpu().float()
     mel = librosa.feature.melspectrogram(
         y=audio,
         sr=cfg.sample_rate,
@@ -314,6 +367,8 @@ class FeatureExtractor:
         self.cfg = cfg
         self.tokenizer = tokenizer or PhonemeTokenizer(cfg.vocab_path)
         self.phonemizer = phonemizer or LuxembourgishPhonemizer()
+        device_str = cfg.mel_device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device_str)
 
     def process(
         self,
@@ -331,12 +386,12 @@ class FeatureExtractor:
         logger.info("Processing utterance %s", audio_path.stem)
         logger.debug("Raw text: %s", text)
 
-        phonemes = self.phonemizer(text)
-        if not phonemes:
+        phoneme_tokens = self.phonemizer(text)
+        if not phoneme_tokens:
             raise ValueError("Empty phoneme sequence")
         # Split phoneme strings into individual symbols and remove combining marks
         symbols: List[str] = []
-        for token in phonemes:
+        for token in phoneme_tokens:
             if not token:
                 continue
             normalized = unicodedata.normalize("NFD", token)
@@ -344,7 +399,9 @@ class FeatureExtractor:
                 if unicodedata.category(ch) == "Mn":
                     continue
                 symbols.append(ch)
-        phonemes = symbols
+        phonemes: List[str] = []
+        for symbol in symbols:
+            phonemes.extend(_map_symbol(symbol))
         if not phonemes:
             raise ValueError("Phoneme normalization produced an empty sequence")
         if len(phonemes) > self.cfg.max_phoneme_tokens:
@@ -356,7 +413,7 @@ class FeatureExtractor:
         audio = load_audio(audio_path, self.cfg.mel.sample_rate)
         audio = trim_silence(audio, self.cfg.silence_trim_db)
 
-        mel = compute_mel_spectrogram(audio, self.cfg.mel)
+        mel = compute_mel_spectrogram(audio, self.cfg.mel, self.device)
         frame_count = mel.shape[1]
         logger.debug("Mel shape for %s: %s", audio_path.stem, tuple(mel.shape))
 
