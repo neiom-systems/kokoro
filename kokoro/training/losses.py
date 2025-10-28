@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import torch
@@ -271,11 +271,11 @@ class LossComputer:
         batch: Mapping[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
         output_map: Dict[str, torch.Tensor]
-        if isinstance(output, TrainableKModelOutput):
-            output_map = output.__dict__  # dataclass fields
+        if is_dataclass(output):
+            output_map = {field.name: getattr(output, field.name) for field in fields(output)}
         else:
             output_map = dict(output)
-        device = next(value for value in output_map.values() if isinstance(value, torch.Tensor)).device
+        device = next(value.device for value in output_map.values() if isinstance(value, torch.Tensor))
         components: Dict[str, torch.Tensor] = {}
 
         duration_logits = output_map["duration_logits"].to(device)

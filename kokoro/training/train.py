@@ -277,7 +277,8 @@ def train_one_epoch(
             batch["audio_target"] = load_audio_batch(audio_paths, cfg.data.sample_rate, device)
 
         use_teacher = epoch < cfg.model.teacher_force_epochs
-        with torch.cuda.amp.autocast(enabled=cfg.optim.use_amp):
+        autocast_enabled = cfg.optim.use_amp and device.type == "cuda"
+        with torch.amp.autocast(device_type="cuda", enabled=autocast_enabled):
             output = model(
                 batch,
                 use_teacher_durations=use_teacher,

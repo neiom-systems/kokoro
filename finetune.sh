@@ -87,6 +87,23 @@ python download_base_model.py
 echo "[INFO] Downloading Luxembourgish dataset"
 python data/scripts/prepare_luxembourgish_male_only.py --work-dir data/luxembourgish_male_corpus
 
+ALIGNMENT_DIR="data/luxembourgish_male_corpus/alignments"
+ALIGNMENT_TEXTGRID=""
+if [[ "${GENERATE_ALIGNMENTS:-0}" == "1" ]]; then
+  echo "[INFO] Generating Montreal Forced Aligner TextGrids"
+  python scripts/generate_alignments.py \
+    --config train_luxembourgish.toml \
+    --output-dir "$ALIGNMENT_DIR" \
+    --num-workers "${ALIGN_WORKERS:-8}" \
+    --acoustic-model "${ALIGN_ACOUSTIC_MODEL:-german_mfa}" \
+    --mfa-executable "${MFA_BIN:-mfa}"
+  ALIGNMENT_TEXTGRID="$ALIGNMENT_DIR/TextGrid"
+else
+  if [[ -n "${FEATURE_ALIGNMENT_ROOT:-}" ]]; then
+    ALIGNMENT_TEXTGRID="$FEATURE_ALIGNMENT_ROOT"
+  fi
+fi
+
 echo "[INFO] Generating Luxembourgish voice table"
 python scripts/generate_voice_table.py --config train_luxembourgish.toml --num-clips "${VOICE_CLIPS:-64}"
 
@@ -96,11 +113,20 @@ if [[ "${FEATURE_FORCE:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
 fi
 
 echo "[INFO] Extracting acoustic features"
-python scripts/generate_features.py \
-  --config train_luxembourgish.toml \
-  --splits train test \
-  --log-level "${FEATURE_LOG_LEVEL:-INFO}" \
-  "${FEATURE_FORCE_FLAG[@]}"
+FEATURE_ARGS=(
+  --config train_luxembourgish.toml
+  --splits train test
+  --log-level "${FEATURE_LOG_LEVEL:-INFO}"
+  --num-workers "${FEATURE_WORKERS:-8}"
+  --mel-device "${FEATURE_MEL_DEVICE:-cuda}"
+)
+if [[ -n "$ALIGNMENT_TEXTGRID" ]]; then
+  FEATURE_ARGS+=(--alignment-root "$ALIGNMENT_TEXTGRID")
+fi
+if (( ${#FEATURE_FORCE_FLAG[@]} )); then
+  FEATURE_ARGS+=("${FEATURE_FORCE_FLAG[@]}")
+fi
+python scripts/generate_features.py "${FEATURE_ARGS[@]}"
 
 TRAIN_ARGS=(--config train_luxembourgish.toml)
 if [[ -n "${TRAIN_EXTRA_ARGS:-}" ]]; then
