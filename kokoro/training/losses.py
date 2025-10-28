@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - torchaudio required when mel loss enab
 
 from .config import LossConfig
 from .model import TrainableKModelOutput
+from ..custom_stft import CustomSTFT
 
 
 @dataclass(frozen=True)
@@ -35,11 +36,19 @@ class MultiResolutionSTFTLoss(nn.Module):
         if not specs:
             raise ValueError("At least one STFTSpec is required")
         self.specs = specs
-        self._window_names: Tuple[str, ...] = tuple(f"window_{i}" for i in range(len(specs)))
-        for name, spec in zip(self._window_names, specs):
-            win_length = spec.win_length or spec.fft_size
-            window = torch.hann_window(win_length)
-            self.register_buffer(name, window, persistent=False)
+        self.stfts = nn.ModuleList(
+            [
+                CustomSTFT(
+                    filter_length=spec.fft_size,
+                    hop_length=spec.hop_length,
+                    win_length=spec.win_length or spec.fft_size,
+                    window="hann",
+                    center=True,
+                    pad_mode="replicate",
+                )
+                for spec in specs
+            ]
+        )
 
     def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if prediction.dtype != torch.float32:
@@ -57,30 +66,9 @@ class MultiResolutionSTFTLoss(nn.Module):
 
         sc_loss = prediction.new_tensor(0.0)
         mag_loss = prediction.new_tensor(0.0)
-        for spec, name in zip(self.specs, self._window_names):
-            win_length = spec.win_length or spec.fft_size
-            window = getattr(self, name)
-            window_data = window.to(prediction.device)
-            y_hat = torch.stft(
-                prediction,
-                n_fft=spec.fft_size,
-                hop_length=spec.hop_length,
-                win_length=win_length,
-                window=window_data,
-                center=True,
-                return_complex=True,
-            )
-            y = torch.stft(
-                target,
-                n_fft=spec.fft_size,
-                hop_length=spec.hop_length,
-                win_length=win_length,
-                window=window_data,
-                center=True,
-                return_complex=True,
-            )
-            y_hat_mag = y_hat.abs()
-            y_mag = y.abs()
+        for stft_module in self.stfts:
+            y_hat_mag, _ = stft_module.transform(prediction)
+            y_mag, _ = stft_module.transform(target)
             sc = ((y_mag - y_hat_mag).norm(p="fro") / (y_mag.norm(p="fro") + 1e-7))
             mag = F.l1_loss(y_hat_mag, y_mag)
             sc_loss = sc_loss + sc
