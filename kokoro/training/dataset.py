@@ -29,6 +29,7 @@ Pathish = Union[str, Path]
 
 FEATURE_EXTENSION_CANDIDATES: Tuple[str, ...] = (".pt", ".pth", ".npz")
 EXPECTED_MEL_BINS = 80
+_SANITISED_CACHES: set[Path] = set()
 
 
 @dataclass(frozen=True)
@@ -74,18 +75,39 @@ def _load_from_npz(path: Path) -> CachedSample:
     if missing:
         raise KeyError(f"{path}: missing keys {sorted(missing)}")
     uv = data["uv"] if "uv" in data.files else None
+    input_ids = torch.as_tensor(data["input_ids"], dtype=torch.long)
+    durations = torch.as_tensor(data["durations"], dtype=torch.long)
+    mel = torch.as_tensor(data["mel"], dtype=torch.float32)
+    f0 = torch.as_tensor(data["f0"], dtype=torch.float32)
+    mel = _ensure_finite(mel, name="mel", path=path)
+    f0 = _ensure_finite(f0, name="f0", path=path)
+    if uv is not None:
+        uv_tensor = torch.as_tensor(uv, dtype=torch.float32)
+        uv_tensor = _ensure_finite(uv_tensor, name="uv", path=path)
+    else:
+        uv_tensor = (f0 > 0).float()
     return CachedSample(
-        input_ids=torch.as_tensor(data["input_ids"], dtype=torch.long),
-        durations=torch.as_tensor(data["durations"], dtype=torch.long),
-        mel=torch.as_tensor(data["mel"], dtype=torch.float32),
-        f0=torch.as_tensor(data["f0"], dtype=torch.float32),
-        uv=torch.as_tensor(data["uv"], dtype=torch.float32) if uv is not None else torch.zeros_like(torch.as_tensor(data["f0"], dtype=torch.float32)),
+        input_ids=input_ids,
+        durations=durations,
+        mel=mel,
+        f0=f0,
+        uv=uv_tensor,
     )
+
+
+def _ensure_finite(tensor: torch.Tensor, *, name: str, path: Path) -> torch.Tensor:
+    if torch.isfinite(tensor).all():
+        return tensor
+    global _SANITISED_CACHES
+    if path not in _SANITISED_CACHES:
+        logger.warning("Non-finite values found in %s for %s; replacing with zeros", name, path)
+        _SANITISED_CACHES.add(path)
+    return torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _load_from_pt(path: Path) -> CachedSample:
     try:
-        payload = torch.load(path, map_location="cpu")
+        payload = torch.load(path, map_location="cpu", weights_only=True)
     except RuntimeError as exc:
         raise RuntimeError(f"Failed to load cached sample {path}: {exc}") from exc
     if not isinstance(payload, Mapping):
@@ -95,11 +117,15 @@ def _load_from_pt(path: Path) -> CachedSample:
             raise KeyError(f"{path}: missing key '{key}'")
     uv = payload.get("uv")
     f0_tensor = torch.as_tensor(payload["f0"], dtype=torch.float32)
+    f0_tensor = _ensure_finite(f0_tensor, name="f0", path=path)
     uv_tensor = torch.as_tensor(uv, dtype=torch.float32) if uv is not None else (f0_tensor > 0).float()
+    uv_tensor = _ensure_finite(uv_tensor, name="uv", path=path)
+    mel_tensor = torch.as_tensor(payload["mel"], dtype=torch.float32)
+    mel_tensor = _ensure_finite(mel_tensor, name="mel", path=path)
     return CachedSample(
         input_ids=torch.as_tensor(payload["input_ids"], dtype=torch.long),
         durations=torch.as_tensor(payload["durations"], dtype=torch.long),
-        mel=torch.as_tensor(payload["mel"], dtype=torch.float32),
+        mel=mel_tensor,
         f0=f0_tensor,
         uv=uv_tensor,
     )
@@ -326,6 +352,12 @@ class LuxembourgishDataset(torch.utils.data.Dataset):
             )
         if sample.uv.numel() != mel_frames:
             sample.uv = (sample.f0 > 0).float()
+        if not torch.isfinite(sample.mel).all():
+            raise ValueError(f"{entry.utt_id}: mel features contain non-finite values; regenerate cache")
+        if not torch.isfinite(sample.f0).all():
+            raise ValueError(f"{entry.utt_id}: f0 features contain non-finite values; regenerate cache")
+        if not torch.isfinite(sample.uv).all():
+            raise ValueError(f"{entry.utt_id}: uv features contain non-finite values; regenerate cache")
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Validated sample %s: phonemes=%d frames=%d duration_sum=%d voice_row=%d",

@@ -131,8 +131,12 @@ class MelSpectrogramLoss(nn.Module):
         if prediction.dim() == 2:
             prediction = prediction.unsqueeze(1)
         mel_pred = self.transform(prediction)
+        if not torch.isfinite(mel_pred).all():
+            raise RuntimeError("MelSpectrogramLoss received non-finite prediction; check model outputs.")
         mel_pred = torch.log(torch.clamp(mel_pred, min=1e-5))
         mel_tgt = torch.log(torch.clamp(target_mel, min=1e-5))
+        if not torch.isfinite(mel_tgt).all():
+            raise RuntimeError("MelSpectrogramLoss received non-finite target mel features; regenerate caches.")
         mel_pred = mel_pred.transpose(-2, -1)  # [batch, frames, n_mels]
         mel_tgt = mel_tgt.transpose(-2, -1) if mel_tgt.shape[1] == mel_pred.shape[-1] else mel_tgt.transpose(-2, -1)
         if mel_pred.shape[1] != mel_tgt.shape[1]:

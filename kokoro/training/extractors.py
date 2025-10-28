@@ -536,6 +536,7 @@ class FeatureExtractor:
         audio = trim_silence(audio, self.cfg.silence_trim_db)
 
         mel = compute_mel_spectrogram(audio, self.cfg.mel, self.device)
+        mel = torch.nan_to_num(mel, nan=0.0, posinf=0.0, neginf=0.0)
         frame_count = mel.shape[1]
 
         durations: Optional[torch.LongTensor] = None
@@ -554,6 +555,8 @@ class FeatureExtractor:
                 )
 
         f0, uv = extract_f0(audio, self.cfg.mel, self.cfg.f0, frame_count)
+        f0 = torch.nan_to_num(f0, nan=0.0, posinf=0.0, neginf=0.0)
+        uv = torch.nan_to_num(uv, nan=0.0, posinf=0.0, neginf=0.0)
         
         noise = None
         if frame_count > 0:
@@ -566,6 +569,7 @@ class FeatureExtractor:
             ).squeeze(0)
             noise = torch.log(frame_energy.clamp(min=1e-6))
             noise = F.pad(noise, (0, frame_count - noise.shape[0]))[:frame_count]
+            noise = torch.nan_to_num(noise, nan=0.0, posinf=0.0, neginf=0.0)
 
         phoneme_ids = self.tokenizer.encode(phonemes)
         result = ExtractionResult(
@@ -592,10 +596,10 @@ class FeatureExtractor:
     def _write_result(self, path: Path, result: ExtractionResult) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "mel": result.mel,
+            "mel": torch.nan_to_num(result.mel, nan=0.0, posinf=0.0, neginf=0.0),
             "durations": result.durations,
-            "f0": result.f0,
-            "uv": result.uv,
+            "f0": torch.nan_to_num(result.f0, nan=0.0, posinf=0.0, neginf=0.0),
+            "uv": torch.nan_to_num(result.uv, nan=0.0, posinf=0.0, neginf=0.0),
             "num_frames": torch.tensor(result.num_frames, dtype=torch.long),
             "tokens": result.tokens,
             "input_ids": result.phoneme_ids,  # Use 'input_ids' key for dataset compatibility
@@ -604,7 +608,7 @@ class FeatureExtractor:
             "metadata": result.metadata,
         }
         if result.noise is not None:
-            payload["noise"] = result.noise
+            payload["noise"] = torch.nan_to_num(result.noise, nan=0.0, posinf=0.0, neginf=0.0)
         torch.save(payload, path)
 
     @staticmethod

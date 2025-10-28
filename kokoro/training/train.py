@@ -298,6 +298,15 @@ def train_one_epoch(
                 use_teacher_durations=use_teacher,
                 detach_voice=not cfg.model.train_voice_pack,
             )
+            if not torch.isfinite(output.audio).all():
+                logger.error(
+                    "Model produced non-finite audio at batch %d (epoch %d); utt_ids=%s",
+                    batch_idx,
+                    epoch,
+                    batch.get("utt_ids", []),
+                )
+                optimizer.zero_grad(set_to_none=True)
+                continue
             loss_components = compute_loss(loss_fn, output, batch)
             total_value = loss_components["total"]
             if not torch.isfinite(total_value):
