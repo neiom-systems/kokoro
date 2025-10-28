@@ -28,7 +28,7 @@ What needs to change compared to the inference module:
      Strip the prefix before calling `.load_state_dict`.
    - Saving: return a dict with the same key layout as `KModel` so inference can reuse it.
    - Voice table: if we treat it as part of the model, include it in the checkpoint under
-     `voices/luxembourgish_male`.
+     `voices/lb_max`.
 
 4. **Utility methods**
    - `freeze_submodules`, `unfreeze_submodules` helpers for staged fine-tuning.

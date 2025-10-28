@@ -1,36 +1,50 @@
 """
-Luxembourgish voice-table strategy.
+Luxembourgish voice-table generation via a speaker encoder.
 
 Structure analysis recap:
-- Every stock voice file is a tensor shaped `[510, 1, 256]`.
-- During inference, Kokoro selects row `(sequence_length - 1)` and feeds the resulting
-  `[1, 256]` vector into the predictor/decoder. The first 128 dims condition the decoder,
-  the remaining 128 feed the predictor (`ref_s[:, :128]` vs `ref_s[:, 128:]`).
+- Each Kokoro voice pack is a tensor shaped `[510, 1, 256]`.
+- Inference selects row `(sequence_length - 1)` to obtain the `[1, 256]` vector that
+  conditions both the decoder (`[:128]`) and the prosody predictor (`[128:]`).
 
-Tasks for this module
----------------------
-1. Decide how to bootstrap a Luxembourgish voice table:
-   - **Option A (recommended to start):** clone an existing neutral male voice (e.g.
-     `af_narrator.pt`), make it trainable, and let fine-tuning adapt it. This matches the
-     original scale/variance and avoids reverse-engineering the extraction process.
-   - **Option B:** learn a projection from an external speaker encoder (WavLM/HuBERT) to
-     256 dims, then map it to 510 positions (e.g. via positional conditioning). This is
-     higher effort and should only be attempted if Option A fails.
-2. Provide utilities to load/save the trainable table (`torch.load`/`torch.save` in the
-   same format as `base_model/voices/*.pt`) so inference can pick it up seamlessly.
-3. During training, expose both the parameter tensor and helper functions:
-   - `get_row(batch_seq_lengths)` → returns the `[batch, 1, 256]` tensor matching each
-     sample’s phoneme length.
-   - Optional temperature or smoothing logic in case we want interpolation between rows.
-4. Handle gradient flow: the training wrapper should register the tensor as an
-   `nn.Parameter`, optionally with per-row dropout/regularisation to prevent collapse.
+Chosen approach
+---------------
+- Feed curated Luxembourgish reference audio through a robust speaker encoder
+  (e.g. WavLM-large or HuBERT-large) to obtain a fixed-length speaker embedding.
+- Map that embedding to a 256-dim latent via a projection head (small MLP or linear stack).
+- Expand the latent into 510 position-specific rows by injecting positional information
+  (sinusoidal embeddings, learned index embeddings, or a lightweight transformer).
+- Register the resulting `[510, 1, 256]` table as trainable so gradients can refine it
+  jointly with Kokoro during fine-tuning.
+
+Key responsibilities
+--------------------
+1. **Preprocessing**  
+   - Normalise audio to match the upstream encoder requirements (16 kHz vs. 24 kHz, volume).
+   - Optionally average embeddings over multiple reference clips to reduce noise.
+2. **Projection head**  
+   - Define the architecture and initialisation scheme that maps the speaker-encoder
+     embedding to the base 256-dim latent.
+   - Provide hooks for regularisation (e.g. L2 towards initial weights).
+3. **Positional expansion**  
+   - Produce 510 distinct rows using positional encodings or a learned index-conditional
+     network; maintain the same scale (mean ≈ 0, std ≈ 0.15) observed in stock voices.
+4. **Caching & I/O**  
+   - Implement `generate_table(audio_paths, *, cache_path=None)` that returns the tensor and
+     optionally saves it via `torch.save` for reuse.
+   - Implement `load_table(path)` / `save_table(tensor, path)` for consistency with existing
+     voice packs (stored under `base_model/voices/*.pt`).
+5. **Training hooks**  
+   - Expose helper functions such as `get_rows(table, phoneme_lengths)` to select the correct
+     `[batch, 1, 256]` slices inside the dataloader or model wrapper.
+   - Optionally surface a regulariser that nudges the table towards the projection output if
+     we later allow the table to drift far during fine-tuning.
 
 Design notes
 ------------
-- Because the Luxembourgish corpus has a single speaker, we only need one table. If we
-  ever add multiple speakers, this module must support multiple named tables.
-- Keep the numeric range close to the pretrained voices (mean ≈ 0, std ≈ 0.15). When
-  cloning an existing voice, store the original copy so we can reset/restart experiments.
-- Document how to export the final table to `kokoro/base_model/voices/luxembourgish_male.pt`
-  for deployment.
+- Because the corpus is single-speaker, one table suffices; keep the API open for future
+  multi-speaker extensions (e.g. dictionary of tables or conditioning on speaker IDs).
+- Store both the raw speaker-encoder embedding(s) and the generated table for debugging and
+  reproducibility.
+- After training, export the refined table to `kokoro/base_model/voices/luxembourgish_male.pt`
+  (or another agreed filename) so inference can consume it directly.
 """
