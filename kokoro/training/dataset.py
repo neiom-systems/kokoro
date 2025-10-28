@@ -177,7 +177,7 @@ class LuxembourgishDataset(torch.utils.data.Dataset):
                 if path_value is None or text is None:
                     raise KeyError(f"Metadata row missing 'path' or 'text': {row}")
                 utt_id = _derive_utt_id(path_value)
-                audio_path = (self.metadata_csv.parent / "audio" / path_value).resolve()
+                audio_path = (self.metadata_csv.parent / path_value).resolve()
                 entries.append(MetadataEntry(utt_id=utt_id, audio_path=audio_path, text=text.strip(), source=source.strip()))
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
