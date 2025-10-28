@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -9,6 +10,8 @@ import torch
 import torch.nn as nn
 
 from .model import KModel
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -121,6 +124,15 @@ class TrainableKModel(nn.Module):
         input_ids = batch["input_ids"].to(device)
         batch_size, seq_len = input_ids.shape
 
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "TrainableKModel.forward batch_size=%d seq_len=%d teacher=%s detach_voice=%s",
+                batch_size,
+                seq_len,
+                use_teacher_durations,
+                detach_voice,
+            )
+
         voice_rows = batch["voice_rows"].to(device)
         voice = self.select_voice_rows(voice_rows, detach=detach_voice)
         style = voice[:, 128:]
@@ -151,6 +163,15 @@ class TrainableKModel(nn.Module):
                 device=device,
             )
 
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Input lengths stats → min=%d max=%d | frame_lengths min=%d max=%d",
+                int(input_lengths.min().item()),
+                int(input_lengths.max().item()),
+                int(frame_lengths.min().item()),
+                int(frame_lengths.max().item()),
+            )
+
         bert_hidden = self.core.bert(
             input_ids,
             attention_mask=(~text_mask).int(),
@@ -168,6 +189,13 @@ class TrainableKModel(nn.Module):
         duration_prob = torch.sigmoid(duration_logits)
         duration_frames = torch.round(duration_prob.sum(dim=-1)).clamp_(min=1).long()
         duration_frames = duration_frames.masked_fill(text_mask, 0)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Predicted duration frames stats → mean=%.2f std=%.2f",
+                duration_frames.float().mean().item(),
+                duration_frames.float().std(unbiased=False).item(),
+            )
 
         # Remove BOS/EOS from predicted durations.
         for idx in range(batch_size):
@@ -218,6 +246,9 @@ class TrainableKModel(nn.Module):
                 max_frames=max_frames,
             )
 
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Teacher durations applied for %d sequences", duration_teacher_full.size(0))
+
         alignment = alignment_teacher if alignment_teacher is not None else alignment_pred
         alignment_mask = (
             alignment_teacher_mask if alignment_teacher_mask is not None else alignment_pred_mask
@@ -236,6 +267,13 @@ class TrainableKModel(nn.Module):
         audio = self.core.decoder(asr, f0_pred, noise_pred, decoder_style)
         if audio.dim() == 3 and audio.shape[1] == 1:
             audio = audio.squeeze(1)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Forward output audio_len=%s f0_mean=%.4f",
+                tuple(audio.shape),
+                f0_pred.mean().item(),
+            )
 
         return TrainableKModelOutput(
             audio=audio,
@@ -266,6 +304,8 @@ class TrainableKModel(nn.Module):
         table = self.voice_table
         clamped = torch.clamp(indices, 0, table.shape[0] - 1)
         voice = table.index_select(0, clamped)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Selected voice rows: %s", clamped.detach().cpu().tolist())
         return voice.detach() if detach else voice
 
     @staticmethod

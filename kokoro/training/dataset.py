@@ -152,6 +152,12 @@ class LuxembourgishDataset(torch.utils.data.Dataset):
         self.entries: List[MetadataEntry] = self._load_metadata()
         if not self.entries:
             raise ValueError(f"No rows found in metadata CSV: {self.metadata_csv}")
+        logger.info(
+            "Loaded %d metadata entries for split '%s' from %s",
+            len(self.entries),
+            self.split,
+            self.metadata_csv,
+        )
 
         self.feature_dir = self.feature_root / split
         self.feature_dir.mkdir(parents=True, exist_ok=True)
@@ -173,6 +179,12 @@ class LuxembourgishDataset(torch.utils.data.Dataset):
                 utt_id = _derive_utt_id(path_value)
                 audio_path = (self.metadata_csv.parent / "audio" / path_value).resolve()
                 entries.append(MetadataEntry(utt_id=utt_id, audio_path=audio_path, text=text.strip(), source=source.strip()))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Metadata sample preview for '%s': %s",
+                self.split,
+                [e.utt_id for e in entries[:5]],
+            )
         return entries
 
     def _validate_cache_availability(self) -> None:
@@ -207,6 +219,7 @@ class LuxembourgishDataset(torch.utils.data.Dataset):
         cache_path = self._resolve_cache_path(entry)
         if cache_path.exists():
             sample = load_cached_sample(cache_path)
+            logger.debug("Loaded cached sample %s from %s", entry.utt_id, cache_path)
         else:
             if self.feature_extractor is None:
                 raise FileNotFoundError(
@@ -237,6 +250,20 @@ class LuxembourgishDataset(torch.utils.data.Dataset):
         uv = sample.uv
         if uv.shape != f0.shape:
             uv = (f0 > 0).float()
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Prepared dataset item %s | text='%s' | phoneme_len=%d | frames=%d | voice_row=%d",
+                entry.utt_id,
+                entry.text,
+                seq_len_without_special,
+                mel_frames,
+                voice_row,
+            )
+            logger.debug(
+                "input_ids (first 12): %s",
+                sample.input_ids[:12].tolist(),
+            )
 
         return {
             "utt_id": entry.utt_id,
@@ -296,6 +323,15 @@ class LuxembourgishDataset(torch.utils.data.Dataset):
             )
         if sample.uv.numel() != mel_frames:
             sample.uv = (sample.f0 > 0).float()
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Validated sample %s: phonemes=%d frames=%d duration_sum=%d voice_row=%d",
+                entry.utt_id,
+                seq_len - 2,
+                mel_frames,
+                total_duration,
+                seq_len_without_special - 1,
+            )
 
     def shuffled_indices(self, *, generator: Optional[torch.Generator] = None) -> List[int]:
         """Return deterministically shuffled indices using the provided generator."""

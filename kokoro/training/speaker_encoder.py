@@ -70,6 +70,7 @@ def load_audio_waveform(path: Path, target_sr: int) -> torch.Tensor:
         waveform = waveform.mean(dim=0, keepdim=True)
     if sr != target_sr:
         waveform = torchaudio.functional.resample(waveform, orig_freq=sr, new_freq=target_sr)
+    logger.debug("Loaded audio %s (orig_sr=%d → %d, samples=%d)", path, sr, target_sr, waveform.numel())
     return waveform.squeeze(0)
 
 
@@ -83,6 +84,7 @@ class AverageSpeakerEmbedding:
         device = cfg.device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(device)
         self.model.to(self.device).eval()
+        logger.info("Loaded speaker encoder %s on %s", cfg.model_name, self.device)
 
     @torch.no_grad()
     def __call__(self, audio_paths: Sequence[Path]) -> torch.Tensor:
@@ -99,10 +101,12 @@ class AverageSpeakerEmbedding:
             if self.cfg.normalize:
                 embedding = F.normalize(embedding, p=2, dim=-1)
             embeddings.append(embedding.squeeze(0).cpu())
+            logger.debug("Generated embedding for %s with norm %.4f", path.name, embeddings[-1].norm().item())
         stacked = torch.stack(embeddings, dim=0)
         mean_embedding = stacked.mean(dim=0)
         if self.cfg.normalize:
             mean_embedding = F.normalize(mean_embedding, p=2, dim=-1)
+        logger.info("Averaged speaker embedding across %d files (dim=%d)", len(audio_paths), mean_embedding.shape[-1])
         return mean_embedding
 
 
@@ -183,16 +187,19 @@ def generate_voice_table(
     *,
     cache_path: Optional[Path] = None,
 ) -> VoiceTableArtifacts:
+    logger.info("Generating Luxembourgish voice table from %d audio clips", len(audio_paths))
     encoder = AverageSpeakerEmbedding(cfg.encoder)
     base_embedding = encoder(audio_paths)
     projection_input_dim = base_embedding.shape[-1]
     projection_head = ProjectionHead(projection_input_dim, cfg.projection)
     projection_output = projection_head(base_embedding.unsqueeze(0)).squeeze(0)
+    logger.debug("Projection output stats: mean %.4f std %.4f", projection_output.mean().item(), projection_output.std(unbiased=False).item())
 
     expansion = PositionalExpansion(cfg.table)
     table = expansion(projection_output)
     table = match_statistics(table, cfg.table.target_mean, cfg.table.target_std)
     table = table.unsqueeze(1)  # [510, 1, 256]
+    logger.info("Generated voice table with shape %s", tuple(table.shape))
 
     artifacts = VoiceTableArtifacts(
         base_embedding=base_embedding,
@@ -213,12 +220,14 @@ def save_voice_table(artifacts: VoiceTableArtifacts, path: Path) -> None:
         "projection_output": artifacts.projection_output,
     }
     torch.save(payload, path)
+    logger.info("Saved voice table artifacts to %s", path)
 
 
 def load_voice_table(path: Path) -> VoiceTableArtifacts:
     payload = torch.load(path, map_location="cpu")
     if "table" not in payload:
         raise KeyError(f"Voice table file missing 'table' tensor: {path}")
+    logger.info("Loaded voice table from %s", path)
     return VoiceTableArtifacts(
         table=payload["table"],
         base_embedding=payload.get("base_embedding", torch.empty(0)),

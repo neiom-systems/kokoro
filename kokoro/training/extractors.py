@@ -305,6 +305,9 @@ class FeatureExtractor:
             logger.debug("Skipping %s (already exists)", output_path)
             return None
 
+        logger.info("Processing utterance %s", audio_path.stem)
+        logger.debug("Raw text: %s", text)
+
         phonemes = self.phonemizer(text)
         if not phonemes:
             raise ValueError("Empty phoneme sequence")
@@ -312,15 +315,18 @@ class FeatureExtractor:
             raise ValueError(
                 f"Phoneme sequence exceeds max length ({len(phonemes)} > {self.cfg.max_phoneme_tokens})"
             )
+        logger.debug("Phonemes (%d): %s", len(phonemes), " ".join(phonemes))
 
         audio = load_audio(audio_path, self.cfg.mel.sample_rate)
         audio = trim_silence(audio, self.cfg.silence_trim_db)
 
         mel = compute_mel_spectrogram(audio, self.cfg.mel)
         frame_count = mel.shape[1]
+        logger.debug("Mel shape for %s: %s", audio_path.stem, tuple(mel.shape))
 
         alignment_entries = load_textgrid(alignment_path)
         durations = durations_from_alignment(phonemes, alignment_entries, self.cfg.mel, self.cfg.alignment)
+        logger.debug("Duration sum=%d frames=%d", int(durations.sum().item()), frame_count)
 
         if not self.cfg.allow_frame_mismatch:
             if int(durations.sum().item()) != frame_count:
@@ -329,6 +335,7 @@ class FeatureExtractor:
                 )
 
         f0, uv = extract_f0(audio, self.cfg.mel, self.cfg.f0, frame_count)
+        logger.debug("Voiced frames: %d / %d", int(uv.sum().item()), frame_count)
         noise = None
         if frame_count > 0:
             frame_energy = torch.from_numpy(
@@ -356,6 +363,7 @@ class FeatureExtractor:
         )
 
         self._write_result(output_path, result)
+        logger.info("Wrote features for %s → %s", audio_path.stem, output_path)
         return result
 
     def _write_result(self, path: Path, result: ExtractionResult) -> None:
@@ -431,6 +439,7 @@ def run_split_extraction(
 ) -> ExtractionSummary:
     summary = ExtractionSummary()
     rows = read_metadata(metadata_csv)
+    logger.info("Starting feature extraction for %d items from %s", len(rows), metadata_csv)
     for relative_path, text, _ in rows:
         utt_id = Path(relative_path).stem
         audio_path = audio_root / relative_path

@@ -8,9 +8,11 @@ truth.
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping, Optional, Tuple, Union, get_args, get_origin
+from typing import Any, ClassVar, List, Mapping, MutableMapping, Optional, Tuple, Union, get_args, get_origin
 
 try:  # Python 3.11+
     import tomllib
@@ -39,6 +41,8 @@ def _ensure_non_negative(name: str, value: float) -> None:
 @dataclass(slots=True)
 class PathsConfig:
     """Filesystem layout for fine-tuning artefacts."""
+
+    WORKSPACE_ENV_VARS: ClassVar[Tuple[str, ...]] = ("KOKORO_WORKSPACE", "RUNPOD_WORKSPACE", "WORKSPACE")
 
     base_ckpt: Path = Path("base_model/kokoro-v1_0.pth")
     config_json: Path = Path("base_model/config.json")
@@ -80,6 +84,51 @@ class PathsConfig:
             self.voice_export_path.parent,
         }:
             directory.mkdir(parents=True, exist_ok=True)
+
+    def resolve(self, base_dir: Optional[Path] = None) -> None:
+        """Convert all configured paths to absolute paths.
+
+        The search order is: provided ``base_dir`` (typically the config file
+        location), any recognised workspace environment variables, and finally
+        the current working directory.
+        """
+
+        candidate_roots: List[Path] = []
+        if base_dir is not None:
+            candidate_roots.append(base_dir)
+        for env_var in self.WORKSPACE_ENV_VARS:
+            value = os.environ.get(env_var)
+            if value:
+                candidate_roots.append(Path(value))
+        candidate_roots.append(Path.cwd())
+
+        def resolve_path(path_value: Optional[Path]) -> Optional[Path]:
+            if path_value is None:
+                return None
+            if path_value.is_absolute():
+                return path_value
+            for root in candidate_roots:
+                candidate = (root / path_value).resolve()
+                if candidate:
+                    return candidate
+            return path_value.resolve()
+
+        for name in (
+            "base_ckpt",
+            "config_json",
+            "train_csv",
+            "test_csv",
+            "feature_root",
+            "checkpoint_dir",
+            "log_dir",
+            "voice_init",
+            "voice_export_path",
+            "aligner_acoustic_model",
+            "aligner_dictionary",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(self, name, resolve_path(value))
 
 
 @dataclass(slots=True)
@@ -222,6 +271,9 @@ class TrainingConfig:
     def __post_init__(self) -> None:
         self._validate_cross_dependencies()
 
+    def resolve_paths(self, base_dir: Optional[Path] = None) -> None:
+        self.paths.resolve(base_dir)
+
     def _validate_cross_dependencies(self) -> None:
         if self.model.teacher_force_epochs > self.runtime.epochs:
             raise ValueError(
@@ -316,7 +368,9 @@ class TrainingConfig:
             raise RuntimeError("tomllib is unavailable; upgrade to Python 3.11+")
         with open(path, "rb") as handle:
             raw = tomllib.load(handle)
-        return cls.from_dict(raw)
+        cfg = cls.from_dict(raw)
+        cfg.resolve_paths(base_dir=Path(path).resolve().parent)
+        return cfg
 
     @staticmethod
     def _dataclass_to_dict(obj: Any) -> dict[str, Any]:

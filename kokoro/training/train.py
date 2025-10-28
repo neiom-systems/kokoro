@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import math
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,8 @@ from .dataset import LuxembourgishDataset, luxembourgish_collate
 from .losses import LossComputer, STFTSpec
 from .model import TrainableKModel, TrainableKModelOutput
 
+LOG_LEVEL = os.environ.get("KOKORO_LOG_LEVEL", "INFO").upper()
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +43,7 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    logger.info("Global seed set to %d", seed)
 
 
 def load_json(path: Path) -> Mapping[str, object]:
@@ -60,6 +64,7 @@ def load_voice_tensor(path: Path) -> torch.Tensor:
         raise TypeError(f"Unsupported voice file payload type: {type(payload)!r}")
     if tensor.dim() == 2:
         tensor = tensor.unsqueeze(1)
+    logger.info("Loaded voice tensor from %s with shape %s", path, tuple(tensor.shape))
     return tensor.float()
 
 
@@ -96,6 +101,12 @@ def prepare_dataloaders(cfg: TrainingConfig) -> Tuple[DataLoader, DataLoader]:
         num_workers=cfg.runtime.num_workers,
         pin_memory=True,
         collate_fn=luxembourgish_collate,
+    )
+    logger.info(
+        "Created dataloaders (train_batches=%d, val_batches=%d, batch_size=%d)",
+        len(train_loader),
+        len(val_loader),
+        cfg.runtime.batch_size,
     )
     return train_loader, val_loader
 
@@ -275,6 +286,16 @@ def train_one_epoch(
             loss_components = compute_loss(loss_fn, output, batch)
             loss = loss_components["total"] / grad_accum
 
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Train batch %d | total=%.4f dur=%.4f f0=%.4f stft=%.4f",
+                batch_idx,
+                loss_components["total"].item(),
+                (loss_components.get("duration_bce", torch.tensor(0.0)) + loss_components.get("duration_l1", torch.tensor(0.0))).item(),
+                loss_components.get("f0", torch.tensor(0.0)).item() if "f0" in loss_components else 0.0,
+                (loss_components.get("stft_sc", torch.tensor(0.0)) + loss_components.get("stft_mag", torch.tensor(0.0))).item(),
+            )
+
         scaler.scale(loss).backward()
 
         if batch_idx % grad_accum == 0:
@@ -336,6 +357,12 @@ def evaluate(
                 detach_voice=True,
             )
             components = compute_loss(loss_fn, output, batch)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Validation batch | total=%.4f stft=%.4f",
+                    components["total"].item(),
+                    (components.get("stft_sc", torch.tensor(0.0)) + components.get("stft_mag", torch.tensor(0.0))).item(),
+                )
             total_loss += components["total"].item()
             total_stft += (components["stft_sc"] + components["stft_mag"]).item()
 
@@ -359,7 +386,12 @@ def setup_logging(log_dir: Path) -> Optional[SummaryWriter]:
 def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
     cfg = TrainingConfig.from_toml(config_path)
     cfg.paths.ensure_directories()
-    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+    )
+    logger.info("Loaded training configuration from %s", config_path)
+    logger.debug("Resolved paths: %s", cfg.paths)
 
     set_seed(cfg.runtime.seed)
 
@@ -384,6 +416,7 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
     optimizer = create_optimizer(cfg, model)
     train_loader, val_loader = prepare_dataloaders(cfg)
     total_steps = cfg.runtime.epochs * math.ceil(len(train_loader) / max(1, cfg.optim.grad_accum_steps))
+    logger.info("Total optimisation steps across training: %d", total_steps)
     scheduler = create_scheduler(cfg, optimizer, total_steps)
 
     loss_fn = LossComputer(
@@ -401,6 +434,7 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
     best_score = float("inf")
 
     if resume is not None and resume.exists():
+        logger.info("Resuming from checkpoint %s", resume)
         state = torch.load(resume, map_location=device)
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
