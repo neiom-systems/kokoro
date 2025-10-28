@@ -422,6 +422,9 @@ class FeatureExtractor:
         output_path: Path,
         skip_existing: bool = True,
     ) -> Optional[ExtractionResult]:
+        import time
+        start_time = time.time()
+        
         if skip_existing and output_path.exists():
             logger.debug("Skipping %s (already exists)", output_path)
             return None
@@ -429,6 +432,8 @@ class FeatureExtractor:
         logger.debug("Processing utterance %s", audio_path.stem)
         logger.debug("Raw text: %s", text)
 
+        # Time phonemization
+        phoneme_start = time.time()
         phoneme_tokens = self.phonemizer(text)
         if not phoneme_tokens:
             raise ValueError("Empty phoneme sequence")
@@ -439,15 +444,25 @@ class FeatureExtractor:
             raise ValueError(
                 f"Phoneme sequence exceeds max length ({len(phonemes)} > {self.cfg.max_phoneme_tokens})"
             )
-        logger.debug("Phonemes (%d): %s", len(phonemes), " ".join(phonemes))
+        phoneme_time = time.time() - phoneme_start
+        logger.debug("Phonemes (%d): %s [%.2fs]", len(phonemes), " ".join(phonemes), phoneme_time)
 
+        # Time audio loading
+        audio_start = time.time()
         audio = load_audio(audio_path, self.cfg.mel.sample_rate)
         audio = trim_silence(audio, self.cfg.silence_trim_db)
+        audio_time = time.time() - audio_start
+        logger.debug("Audio loaded and trimmed [%.2fs]", audio_time)
 
+        # Time mel computation
+        mel_start = time.time()
         mel = compute_mel_spectrogram(audio, self.cfg.mel, self.device)
         frame_count = mel.shape[1]
-        logger.debug("Mel shape for %s: %s", audio_path.stem, tuple(mel.shape))
+        mel_time = time.time() - mel_start
+        logger.debug("Mel shape for %s: %s [%.2fs]", audio_path.stem, tuple(mel.shape), mel_time)
 
+        # Time duration computation
+        duration_start = time.time()
         durations: Optional[torch.LongTensor] = None
         if alignment_path and alignment_path.exists():
             alignment_entries = load_textgrid(alignment_path)
@@ -469,9 +484,17 @@ class FeatureExtractor:
                 raise ValueError(
                     f"Duration sum {int(durations.sum().item())} != mel frames {frame_count}"
                 )
+        duration_time = time.time() - duration_start
+        logger.debug("Duration computation [%.2fs]", duration_time)
 
+        # Time F0 extraction
+        f0_start = time.time()
         f0, uv = extract_f0(audio, self.cfg.mel, self.cfg.f0, frame_count)
-        logger.debug("Voiced frames: %d / %d", int(uv.sum().item()), frame_count)
+        f0_time = time.time() - f0_start
+        logger.debug("Voiced frames: %d / %d [%.2fs]", int(uv.sum().item()), frame_count, f0_time)
+        
+        # Time noise computation
+        noise_start = time.time()
         noise = None
         if frame_count > 0:
             frame_energy = torch.from_numpy(
@@ -483,8 +506,16 @@ class FeatureExtractor:
             ).squeeze(0)
             noise = torch.log(frame_energy.clamp(min=1e-6))
             noise = F.pad(noise, (0, frame_count - noise.shape[0]))[:frame_count]
+        noise_time = time.time() - noise_start
+        logger.debug("Noise computation [%.2fs]", noise_time)
 
+        # Time tokenization
+        token_start = time.time()
         phoneme_ids = self.tokenizer.encode(phonemes)
+        token_time = time.time() - token_start
+        logger.debug("Phoneme tokenization [%.2fs]", token_time)
+        # Time result creation and writing
+        write_start = time.time()
         result = ExtractionResult(
             mel=mel,
             durations=durations,
@@ -499,7 +530,11 @@ class FeatureExtractor:
         )
 
         self._write_result(output_path, result)
-        logger.debug("Wrote features for %s → %s", audio_path.stem, output_path)
+        write_time = time.time() - write_start
+        
+        total_time = time.time() - start_time
+        logger.info("Processed %s: total=%.2fs (phoneme=%.2fs, audio=%.2fs, mel=%.2fs, f0=%.2fs, write=%.2fs)", 
+                   audio_path.stem, total_time, phoneme_time, audio_time, mel_time, f0_time, write_time)
         return result
 
     def _write_result(self, path: Path, result: ExtractionResult) -> None:
