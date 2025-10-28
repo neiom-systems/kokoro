@@ -53,7 +53,7 @@ echo "[INFO] Installing PyTorch (index: $TORCH_INDEX_URL)"
 pip install --upgrade "torch==${TORCH_VERSION}" "torchaudio==${TORCHAUDIO_VERSION}" --index-url "$TORCH_INDEX_URL"
 
 echo "[INFO] Installing training dependencies"
-pip install --upgrade python-dotenv librosa soundfile pyworld textgrid tensorboard tqdm accelerate
+pip install --upgrade python-dotenv librosa soundfile pyworld textgrid tensorboard tqdm accelerate hf_transfer
 
 echo "[INFO] Installing local packages"
 pip install --upgrade -e "$MISAKI_DIR"
