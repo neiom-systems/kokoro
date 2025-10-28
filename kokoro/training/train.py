@@ -11,7 +11,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Mapping, MutableMapping, Optional, Tuple
+from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -331,19 +331,28 @@ def train_one_epoch(
                     time.time() - batch_start,
                     step_time,
                 )
-            if writer is None and global_step % log_interval == 0:
+            if global_step % log_interval == 0:
+                dur_loss = (
+                    loss_components.get("duration_bce", torch.tensor(0.0))
+                    + loss_components.get("duration_l1", torch.tensor(0.0))
+                ).item()
+                stft_loss = (
+                    loss_components.get("stft_sc", torch.tensor(0.0))
+                    + loss_components.get("stft_mag", torch.tensor(0.0))
+                ).item()
+                f0_loss = loss_components.get("f0", torch.tensor(0.0)).item()
                 logger.info(
                     "Step %d | total=%.4f dur=%.4f f0=%.4f stft=%.4f",
                     global_step,
                     loss_components["total"].item(),
-                    (loss_components.get("duration_bce", torch.tensor(0.0)) + loss_components.get("duration_l1", torch.tensor(0.0))).item(),
-                    loss_components.get("f0", torch.tensor(0.0)).item() if "f0" in loss_components else 0.0,
-                    (loss_components.get("stft_sc", torch.tensor(0.0)) + loss_components.get("stft_mag", torch.tensor(0.0))).item(),
+                    dur_loss,
+                    f0_loss,
+                    stft_loss,
                 )
 
-            if writer is not None and global_step % log_interval == 0:
-                for key, value in loss_components.items():
-                    writer.add_scalar(f"train/{key}", value.item(), global_step)
+                if writer is not None:
+                    for key, value in loss_components.items():
+                        writer.add_scalar(f"train/{key}", value.item(), global_step)
                 writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
 
         total_loss += loss_components["total"].item()
