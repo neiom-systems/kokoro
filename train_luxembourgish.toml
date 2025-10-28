@@ -66,3 +66,4 @@ checkpoint_interval_steps = 10000
 prefetch_factor = 4
 persistent_workers = true
 enable_compile = false
+max_steps = 5000

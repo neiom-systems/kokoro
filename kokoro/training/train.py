@@ -255,13 +255,14 @@ def train_one_epoch(
     global_step: int,
     writer: Optional[SummaryWriter],
     scheduler: Optional[_LRScheduler],
-) -> Tuple[int, float]:
+) -> Tuple[int, float, bool]:
     model.train()
     total_loss = 0.0
     total_loss_raw = 0.0
     grad_accum = cfg.optim.grad_accum_steps
     log_interval = cfg.runtime.log_interval
     batches_processed = 0
+    stop_training = False
     prev_iter_end = time.time()
     for batch_idx, batch in enumerate(train_loader, start=1):
         batch_start = time.time()
@@ -421,7 +422,11 @@ def train_one_epoch(
         prev_iter_end = time.time()
         batches_processed += 1
 
-    if batches_processed and batches_processed % grad_accum != 0:
+        if cfg.runtime.max_steps is not None and global_step >= cfg.runtime.max_steps:
+            stop_training = True
+            break
+
+    if batches_processed and batches_processed % grad_accum != 0 and not stop_training:
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.optim.grad_clip_norm)
         scaler.step(optimizer)
@@ -437,7 +442,7 @@ def train_one_epoch(
     avg_loss = total_loss / denom
     avg_loss_raw = total_loss_raw / denom if denom else float("inf")
     logger.debug("Average training loss raw=%.2e normalized=%.4f", avg_loss_raw, avg_loss)
-    return global_step, avg_loss
+    return global_step, avg_loss, stop_training
 
 
 def evaluate(
@@ -583,7 +588,7 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
         if epoch == cfg.model.freeze_text_encoder_epochs:
             model.unfreeze_submodules(text_encoder=True)
 
-        global_step, train_loss = train_one_epoch(
+        global_step, train_loss, stop_training = train_one_epoch(
             cfg=cfg,
             model=model,
             loss_fn=loss_fn,
@@ -631,6 +636,10 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
             is_best=is_best,
             scheduler=scheduler,
         )
+
+        if stop_training:
+            logger.info("Reached max_steps=%d; stopping training early.", cfg.runtime.max_steps)
+            break
 
     export_voice_table(model, cfg.paths.voice_export_path)
     if writer is not None:
