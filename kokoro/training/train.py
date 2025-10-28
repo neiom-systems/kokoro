@@ -45,8 +45,6 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
     logger.info("Global seed set to %d", seed)
 
 
@@ -498,10 +496,10 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = not deterministic
         try:
-            torch.backends.cuda.matmul.allow_tf32 = False
-            torch.backends.cudnn.allow_tf32 = False
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
         except AttributeError:
-            pass
+            logger.debug("TF32 enabling not supported on this torch build")
     torch.set_num_threads(1)
 
     base_config = load_json(cfg.paths.config_json)
