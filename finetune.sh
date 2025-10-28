@@ -82,13 +82,13 @@ print(f"[INFO] torch.version: {torch.__version__} | torch.version.cuda: {torch.v
 PY
 
 echo "[INFO] Downloading Kokoro base model"
-python kokoro/download_base_model.py
+python download_base_model.py
 
 echo "[INFO] Downloading Luxembourgish dataset"
-python kokoro/data/scripts/prepare_luxembourgish_male_only.py --work-dir kokoro/data/luxembourgish_male_corpus
+python data/scripts/prepare_luxembourgish_male_only.py --work-dir data/luxembourgish_male_corpus
 
 echo "[INFO] Generating Luxembourgish voice table"
-python kokoro/scripts/generate_voice_table.py --config kokoro/train_luxembourgish.toml --num-clips "${VOICE_CLIPS:-64}"
+python scripts/generate_voice_table.py --config train_luxembourgish.toml --num-clips "${VOICE_CLIPS:-64}"
 
 FEATURE_FORCE_FLAG=()
 if [[ "${FEATURE_FORCE:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
@@ -96,13 +96,13 @@ if [[ "${FEATURE_FORCE:-}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
 fi
 
 echo "[INFO] Extracting acoustic features"
-python kokoro/scripts/generate_features.py \
-  --config kokoro/train_luxembourgish.toml \
+python scripts/generate_features.py \
+  --config train_luxembourgish.toml \
   --splits train test \
   --log-level "${FEATURE_LOG_LEVEL:-INFO}" \
   "${FEATURE_FORCE_FLAG[@]}"
 
-TRAIN_ARGS=(--config kokoro/train_luxembourgish.toml)
+TRAIN_ARGS=(--config train_luxembourgish.toml)
 if [[ -n "${TRAIN_EXTRA_ARGS:-}" ]]; then
   # shellcheck disable=SC2206
   EXTRA_ARR=(${TRAIN_EXTRA_ARGS})
