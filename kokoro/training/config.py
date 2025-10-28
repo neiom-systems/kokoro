@@ -170,6 +170,7 @@ class ModelConfig:
     dropout_override: Optional[float] = None
     disable_complex_decoder: bool = False
     max_duration_frames: int = 50
+    use_gradient_checkpointing: bool = False
 
     def __post_init__(self) -> None:
         for name in ("freeze_bert_epochs", "freeze_text_encoder_epochs", "teacher_force_epochs", "max_duration_frames"):
@@ -181,6 +182,8 @@ class ModelConfig:
         _ensure_non_negative("voice_pack_lr", self.voice_pack_lr)
         if not self.train_voice_pack and self.voice_pack_lr > 0.0:
             raise ValueError("Set voice_pack_lr to 0 when train_voice_pack is False")
+        if not isinstance(self.use_gradient_checkpointing, bool):
+            raise TypeError("use_gradient_checkpointing must be a boolean")
 
 
 @dataclass(slots=True)

@@ -31,6 +31,7 @@ train_voice_pack = true
 voice_pack_lr = 5e-4
 disable_complex_decoder = false
 max_duration_frames = 50
+use_gradient_checkpointing = true
 
 [optim]
 optimizer = "adamw"

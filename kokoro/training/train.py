@@ -134,6 +134,7 @@ def create_model(cfg: TrainingConfig, device: torch.device) -> TrainableKModel:
         voice_table=voice_tensor.squeeze(1),
         train_voice=train_voice,
         disable_complex_decoder=cfg.model.disable_complex_decoder,
+        use_gradient_checkpointing=cfg.model.use_gradient_checkpointing,
     )
     model.to(device)
     if cfg.model.freeze_bert_epochs > 0:

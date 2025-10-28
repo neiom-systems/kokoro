@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from ..model import KModel
 
@@ -62,6 +63,7 @@ class TrainableKModel(nn.Module):
         voice_table: torch.FloatTensor,
         train_voice: bool = True,
         disable_complex_decoder: bool = False,
+        use_gradient_checkpointing: bool = False,
     ) -> None:
         """
         Args:
@@ -101,6 +103,7 @@ class TrainableKModel(nn.Module):
         else:
             self.register_buffer("voice_table", voice_tensor, persistent=True)
         self._train_voice = train_voice
+        self._use_gradient_checkpointing = use_gradient_checkpointing
 
     @property
     def device(self) -> torch.device:
@@ -264,7 +267,13 @@ class TrainableKModel(nn.Module):
         )
         asr = text_hidden @ alignment
 
-        audio = self.core.decoder(asr, f0_pred, noise_pred, decoder_style)
+        if self._use_gradient_checkpointing and self.training:
+            def _decoder_fn(asr_t, f0_t, noise_t, style_t):
+                return self.core.decoder(asr_t, f0_t, noise_t, style_t)
+
+            audio = checkpoint(_decoder_fn, asr, f0_pred, noise_pred, decoder_style)
+        else:
+            audio = self.core.decoder(asr, f0_pred, noise_pred, decoder_style)
         if audio.dim() == 3 and audio.shape[1] == 1:
             audio = audio.squeeze(1)
 
