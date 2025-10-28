@@ -80,14 +80,18 @@ class AverageSpeakerEmbedding:
     def __init__(self, cfg: SpeakerEncoderConfig) -> None:
         self.cfg = cfg
         try:
-            self.processor = AutoProcessor.from_pretrained(cfg.model_name)
+            self.processor = AutoProcessor.from_pretrained(cfg.model_name, use_safetensors=True)
         except (TypeError, ValueError, OSError):
             logger.warning(
                 "Falling back to AutoFeatureExtractor for %s (processor loading failed)",
                 cfg.model_name,
             )
             self.processor = AutoFeatureExtractor.from_pretrained(cfg.model_name)
-        self.model = AutoModel.from_pretrained(cfg.model_name)
+        self.model = AutoModel.from_pretrained(
+            cfg.model_name,
+            use_safetensors=True,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else None,
+        )
         device = cfg.device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(device)
         self.model.to(self.device).eval()
