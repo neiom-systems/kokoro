@@ -141,6 +141,12 @@ class ExtractionResult:
 class PhonemeTokenizer:
     """Utility that maps phoneme strings to Kokoro token ids."""
 
+    # Mapping for Luxembourgish phonemes not in Kokoro vocab to similar phonemes
+    LUXEMBOURGISH_PHONEME_MAPPING = {
+        'ʑ': 'ʒ',  # voiced postalveolar fricative -> voiced postalveolar fricative (English)
+        # Add more mappings as needed
+    }
+
     def __init__(self, config_json: Path) -> None:
         with open(config_json, "r", encoding="utf-8") as handle:
             config = json.load(handle)
@@ -153,7 +159,16 @@ class PhonemeTokenizer:
     def encode(self, phonemes: Sequence[str]) -> torch.LongTensor:
         ids = [self.bos_id]
         for phoneme in phonemes:
+            # Try original phoneme first
             idx = self.vocab.get(phoneme)
+            
+            # If not found, try Luxembourgish mapping
+            if idx is None and phoneme in self.LUXEMBOURGISH_PHONEME_MAPPING:
+                mapped_phoneme = self.LUXEMBOURGISH_PHONEME_MAPPING[phoneme]
+                idx = self.vocab.get(mapped_phoneme)
+                if idx is not None:
+                    logging.debug(f"Mapped Luxembourgish phoneme '{phoneme}' -> '{mapped_phoneme}'")
+            
             if idx is None:
                 raise KeyError(f"Unknown phoneme '{phoneme}' in Kokoro vocab")
             ids.append(idx)
