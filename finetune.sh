@@ -2,7 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+WORKSPACE_DIR="$(realpath -m "$SCRIPT_DIR/..")"
+MISAKI_DIR="$(realpath -m "$SCRIPT_DIR/../misaki")"
+KOKORO_DIR="$SCRIPT_DIR"
+
 cd "$WORKSPACE_DIR"
 
 echo "[INFO] Kokoro workspace: $WORKSPACE_DIR"
@@ -31,15 +34,15 @@ fi
 
 # Ensure the Misaki fork is present and up to date
 MISAKI_REPO="https://github.com/neiom-systems/misaki.git"
-if [[ ! -d "$WORKSPACE_DIR/misaki/.git" ]]; then
+if [[ ! -d "$MISAKI_DIR/.git" ]]; then
   echo "[INFO] Cloning Misaki fork from $MISAKI_REPO"
-  git clone "$MISAKI_REPO" "$WORKSPACE_DIR/misaki"
+  git clone "$MISAKI_REPO" "$MISAKI_DIR"
 else
-  echo "[INFO] Using existing Misaki repository at $WORKSPACE_DIR/misaki"
-  git -C "$WORKSPACE_DIR/misaki" remote set-url origin "$MISAKI_REPO"
-  git -C "$WORKSPACE_DIR/misaki" fetch --tags --prune origin
-  git -C "$WORKSPACE_DIR/misaki" checkout main
-  git -C "$WORKSPACE_DIR/misaki" reset --hard origin/main
+  echo "[INFO] Using existing Misaki repository at $MISAKI_DIR"
+  git -C "$MISAKI_DIR" remote set-url origin "$MISAKI_REPO"
+  git -C "$MISAKI_DIR" fetch --tags --prune origin
+  git -C "$MISAKI_DIR" checkout main
+  git -C "$MISAKI_DIR" reset --hard origin/main
 fi
 
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
@@ -53,8 +56,8 @@ echo "[INFO] Installing training dependencies"
 pip install --upgrade python-dotenv librosa soundfile pyworld textgrid tensorboard tqdm accelerate
 
 echo "[INFO] Installing local packages"
-pip install --upgrade -e "$WORKSPACE_DIR/misaki"
-pip install --upgrade -e "$WORKSPACE_DIR/kokoro"
+pip install --upgrade -e "$MISAKI_DIR"
+pip install --upgrade -e "$KOKORO_DIR"
 
 echo "[INFO] Downloading Kokoro base model"
 python kokoro/download_base_model.py
