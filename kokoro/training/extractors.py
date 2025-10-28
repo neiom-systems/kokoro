@@ -77,6 +77,7 @@ class FeatureExtractionConfig:
     silence_trim_db: Optional[float] = None
     voice_table_rows: int = 510
     vocab_path: Path = Path("base_model/config.json")
+    require_alignments: bool = True
 
 
 @dataclass(slots=True)
@@ -275,6 +276,26 @@ def durations_from_alignment(
     return torch.tensor(durations, dtype=torch.long)
 
 
+def estimate_uniform_durations(num_phonemes: int, total_frames: int) -> torch.LongTensor:
+    if num_phonemes <= 0:
+        raise ValueError("Cannot assign durations without phonemes")
+    if total_frames <= 0:
+        return torch.ones(num_phonemes, dtype=torch.long)
+    if total_frames < num_phonemes:
+        durations = torch.zeros(num_phonemes, dtype=torch.long)
+        durations[:total_frames] = 1
+        return durations
+    base = max(1, total_frames // num_phonemes)
+    durations = torch.full((num_phonemes,), base, dtype=torch.long)
+    remaining = total_frames - durations.sum().item()
+    idx = 0
+    while remaining > 0:
+        durations[idx % num_phonemes] += 1
+        remaining -= 1
+        idx += 1
+    return durations
+
+
 joint_statistics_keys = ("mel_min", "mel_max", "mel_mean", "mel_std")
 
 
@@ -297,7 +318,7 @@ class FeatureExtractor:
         *,
         text: str,
         audio_path: Path,
-        alignment_path: Path,
+        alignment_path: Optional[Path],
         output_path: Path,
         skip_existing: bool = True,
     ) -> Optional[ExtractionResult]:
@@ -324,9 +345,21 @@ class FeatureExtractor:
         frame_count = mel.shape[1]
         logger.debug("Mel shape for %s: %s", audio_path.stem, tuple(mel.shape))
 
-        alignment_entries = load_textgrid(alignment_path)
-        durations = durations_from_alignment(phonemes, alignment_entries, self.cfg.mel, self.cfg.alignment)
-        logger.debug("Duration sum=%d frames=%d", int(durations.sum().item()), frame_count)
+        durations: Optional[torch.LongTensor] = None
+        if alignment_path and alignment_path.exists():
+            alignment_entries = load_textgrid(alignment_path)
+            durations = durations_from_alignment(phonemes, alignment_entries, self.cfg.mel, self.cfg.alignment)
+            logger.debug("Duration sum=%d frames=%d", int(durations.sum().item()), frame_count)
+        else:
+            if self.cfg.require_alignments:
+                raise FileNotFoundError(f"Alignment file not found for {audio_path.stem}")
+            durations = estimate_uniform_durations(len(phonemes), frame_count)
+            logger.warning(
+                "No alignment for %s; distributing %d frames uniformly across %d phonemes",
+                audio_path.stem,
+                frame_count,
+                len(phonemes),
+            )
 
         if not self.cfg.allow_frame_mismatch:
             if int(durations.sum().item()) != frame_count:
@@ -432,7 +465,7 @@ def run_split_extraction(
     *,
     metadata_csv: Path,
     audio_root: Path,
-    alignment_root: Path,
+    alignment_root: Optional[Path],
     output_root: Path,
     extractor: FeatureExtractor,
     skip_existing: bool = True,
@@ -443,7 +476,9 @@ def run_split_extraction(
     for relative_path, text, _ in rows:
         utt_id = Path(relative_path).stem
         audio_path = audio_root / relative_path
-        alignment_path = alignment_root / f"{utt_id}.TextGrid"
+        alignment_path = None
+        if alignment_root is not None:
+            alignment_path = alignment_root / f"{utt_id}.TextGrid"
         output_path = output_root / f"{utt_id}.pt"
         try:
             extractor.process(

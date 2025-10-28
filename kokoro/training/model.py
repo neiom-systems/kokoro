@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from .model import KModel
+from ..model import KModel
 
 logger = logging.getLogger(__name__)
 
