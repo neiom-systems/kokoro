@@ -1,31 +1,51 @@
 """
-Audio Feature Extraction Utilities
+Offline feature extraction plan.
 
-Extracts ground truth acoustic features from audio for training supervision.
+Everything here should run as preprocessing jobs before training starts. Keep the code
+idempotent so we can re-run failed chunks without recomputing the entire corpus.
 
-Responsibilities:
-1. F0 Extraction:
-   - Extract fundamental frequency (pitch) contour from audio
-   - Use pyworld, CREPE, or similar F0 tracker
-   - Output: [T_audio] float tensor matching audio length at 24kHz
-   - Used for F0 prediction loss (model predicts F0, we compare to ground truth)
+Mel spectrograms
+----------------
+- Use the exact STFT settings from `config.json`:
+  - `sample_rate = 24000`
+  - `n_fft`, `hop_length`, `win_length`, `n_mels`, `mel_fmin`, `mel_fmax`
+  - Log-mel scaling (clip to avoid `-inf`)
+- Store as float32 tensors (PyTorch `.pt` or NumPy `.npy`). Keep track of the number of
+  frames `T`; this must equal the sum of phoneme durations for the sample.
 
-2. Duration Extraction:
-   - Compute per-phoneme frame durations via forced alignment
-   - Use Montreal Forced Aligner (MFA) or pretrained aligner
-   - Output: [phoneme_len] int tensor, values 1-50 frames (max_dur from config)
-   - Maps each phoneme to its duration in acoustic frames
+Durations / alignments
+----------------------
+- Run Montreal Forced Aligner (MFA) or a comparable tool with a Luxembourgish lexicon.
+  Reuse the phoneme inventory that `misaki.lb.LBG2P` emits so IDs stay consistent.
+- Convert alignments to frame counts in units of the mel hop length (e.g. 240 samples
+  per frame ⇒ 100 fps). Enforce `1 ≤ duration ≤ max_dur (50)`; clip or drop samples that
+  exceed this bound.
+- Persist alignments as integer tensors per utterance. Include metadata for skipped
+  segments (for auditing).
 
-3. Mel Spectrogram Extraction:
-   - Convert audio to mel-spectrogram (80 mel bins per config.json)
-   - Output: [80, T_audio] float tensor
-   - Optional: Used for spectral reconstruction loss
+Pitch (F0) extraction
+---------------------
+- Tools: pyworld (fast) or CREPE (more robust). Start with pyworld; fall back to CREPE
+  on voiced segments with large gaps.
+- Output both `f0` and a voiced/unvoiced mask so the loss can ignore unvoiced frames.
+- Ensure the frame rate matches the mel hop (interpolate if necessary).
 
-4. Duration Alignment:
-   - Align Luxembourgish phonemes (from lb.LBG2P) to audio frames
-   - Handle phoneme sequence length vs audio length mismatch
-   - Ensure phoneme durations sum to audio length in frames
+Noise / energy (optional)
+-------------------------
+- Kokoro predictor also emits `N_pred` (noise envelope). Decide whether to supervise it:
+  - Option A: treat as unsupervised and drop the loss (simplest).
+  - Option B: approximate via log-energy or aperiodicity from pyworld.
 
-All extractors operate on 24kHz audio from the Luxembourgish corpus.
+Caching layout
+--------------
+```
+feature_root/
+  train/
+    <utt_id>.pt  # contains dict {mel, durations, f0, uv, num_frames}
+  test/
+    ...
+```
+
+Include a manifest file summarising how many utterances were successfully processed,
+which ones were skipped, and reasons (too long, alignment failure, etc.).
 """
-

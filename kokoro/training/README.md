@@ -1,86 +1,58 @@
-# Kokoro Training Module for Luxembourgish Fine-Tuning
+# Training Design Notes for Luxembourgish Fine-Tuning
 
-This directory contains all components needed to fine-tune the pretrained Kokoro-82M model on single-speaker Luxembourgish data.
+These notes capture what we actually need in order to fine-tune Kokoro‑82M on the Luxembourgish corpus that lives in `kokoro/data/luxembourgish_male_corpus`. Every file in this directory is currently documentation only; the intent is to turn each into a concrete component once the plan is solid.
 
-## File Structure
+## Quick Reality Check
 
-```
-training/
-├── __init__.py           # Module exports and initialization
-├── config.py             # Training hyperparameters and paths
-├── dataset.py            # Luxembourgish dataset loader
-├── speaker_encoder.py    # Speaker embedding extraction [510, 1, 256]
-├── extractors.py         # F0, duration, mel spectrogram extraction
-├── losses.py             # Duration, F0, and reconstruction losses
-├── model.py              # Trainable Kokoro wrapper (removes @torch.no_grad)
-└── train.py              # Main training loop
-```
+- **Voice packs are lookup tables.** The structure analysis shows that each speaker pack is a tensor with shape `[510, 1, 256]`. Kokoro does *not* consume the entire tensor at once: for a sequence of length `L`, inference takes row `L-1` (shape `[1, 256]`) and splits it into style (`[:128]`) and decoder conditioning (`[:128]`). For training we therefore need to
+  1. keep the whole 510-row table around,
+  2. expose row selection in the dataset/loader,
+  3. decide whether to freeze the table, learn it, or initialise a fresh trainable copy for the Luxembourgish speaker.
+- **`forward_with_tokens` is wrapped in `@torch.no_grad()`.** The stock `KModel` is inference-only. A trainable wrapper has to remove the decorator, optionally add teacher-forcing hooks, and return intermediate tensors (durations, F0, noise) needed for losses.
+- **Predictor outputs shape decisions.** Duration logits have length `max_dur=50` per phoneme and are squashed with `sigmoid().sum(-1)` to produce frame counts. F0/Noise predictions are 1D sequences aligned with expanded phoneme durations. The losses must respect this behaviour; a vanilla MSE on raw logits will not work.
+- **Dataset scale.** The metadata files confirm 28 800 train and 3 200 test utterances (single male speaker, 24 kHz audio). We need a streaming loader with phonemization + cached acoustic features because recomputing on the fly will be too expensive.
 
-## Key Architecture Insights (from BASE_MODEL_ANALYSIS.md)
+## Components and Open Questions
 
-1. **Speaker Embeddings**: `[510, 1, 256]` shape
-   - NOT a single `[1, 256]` vector
-   - 510 position-specific 256-dim embeddings
-   - One per token position in the sequence
+| File | Role | Key decisions to finalise |
+| ---- | ---- | ------------------------ |
+| `config.py` | Central place for experiment hyperparameters and file-system layout | GPU budget, mixed precision, whether to freeze ALBERT, optimiser schedule, gradient clipping, path conventions for cached features |
+| `dataset.py` | Builds batches of tokenised text, cached mels/F0/duration, and the correct voice row index | How to run/call Luxembourgish G2P (`misaki.lb.LBG2P`), where to persist forced-alignment artefacts, padding strategy (phoneme length ≤ 510, mel frames align with duration sum) |
+| `speaker_encoder.py` | Produces or initialises the `[510, 1, 256]` voice pack | Option A: treat it as a trainable parameter initialised from an existing English voice; Option B: learn it via a separate speaker encoder + projection network; document both and pick one |
+| `extractors.py` | Offline feature extraction scripts (mel spectrogram, F0, energy, alignment) | Target frame hop (likely 240 samples = 10 ms to match Kokoro), tool choices (MFA, Montreal Forced Aligner + Luxembourgish lexicon), failure handling and caching |
+| `losses.py` | Aggregates losses for predictor + decoder | Duration regression loss matching sigmoid-sum output, pitch loss with voiced/unvoiced masking, multi-scale STFT loss for waveform reconstruction, optional feature matching |
+| `model.py` | Gradient-enabled wrapper around `KModel` | Provide `forward_train(tokens, voice_row, *, teacher_dur=None, teacher_f0=None, teacher_noise=None)`, keep compatibility with pretrained weights (`module.` prefix stripping), expose modules for optimiser parameter groups |
+| `train.py` | Orchestration script tying everything together | AMP + gradient accumulation strategy, checkpointing, evaluation hooks (MOS-like samples), logging (tensorboard/comet), early stopping on validation STFT loss |
 
-2. **Model Components**: 5 main parts
-   - `bert`: BERT/ALBERT encoder (12 layers, 768-dim)
-   - `bert_encoder`: Linear projection to 512-dim
-   - `decoder`: ISTFTNet generator
-   - `predictor`: Duration and F0 prediction
-   - `text_encoder`: Phoneme sequence encoder
+## High-Level Training Plan
 
-3. **State Dict**: All weights have `'module.'` prefix (DataParallel)
+1. **Offline preprocessing**
+   - Run the Luxembourgish G2P on all transcripts; save phoneme strings and input_ids to disk.
+   - Generate Montréal Forced Aligner (or equivalent) alignments to obtain phoneme durations (in frames that match Kokoro’s hop length).
+   - Extract F0 (pyworld/crepe) and 80-bin mel spectrograms with the same STFT settings as `config.json`.
+   - Decide on a voice-pack initialisation strategy (reuse an existing voice and make it learnable, or build one from a speaker encoder projection).
 
-4. **Dataset**: 32,000 Luxembourgish samples
-   - Train: 28,800 samples
-   - Test: 3,200 samples
-   - Single male speaker
+2. **Model preparation**
+   - Clone the pretrained weights, strip the `module.` prefix, and load into a writable wrapper.
+   - Add a training forward method that can optionally consume ground-truth durations/F0 during early epochs (teacher-forcing) to stabilise gradients.
+   - Determine which submodules remain frozen (baseline: freeze ALBERT + early text encoder layers for the first few epochs, unfreeze later).
 
-## Implementation Order
+3. **Training loop**
+   - Use AdamW with a lower LR for pretrained weights and a higher LR for the new Luxembourgish voice pack.
+   - Apply gradient clipping (`clip_grad_norm_=1.0`) and mixed precision (`torch.cuda.amp`) to fit reasonable batch sizes (likely 2–4 on 24 GB GPUs).
+   - Track losses separately (duration, F0, STFT) and checkpoint the best validation STFT score.
+   - Periodically synthesise validation sentences via `KPipeline(lang_code='l')` using the current voice pack for qualitative checks.
 
-1. ✅ `config.py` — Define all hyperparameters
-2. ✅ `speaker_encoder.py` — Extract one `[510, 1, 256]` embedding
-3. ✅ `extractors.py` — F0 and duration extraction utilities
-4. ✅ `dataset.py` — Load and preprocess Luxembourgish data
-5. ✅ `model.py` — Trainable model wrapper
-6. ✅ `losses.py` — Loss function implementations
-7. ✅ `train.py` — Main training script
+4. **Evaluation & packaging**
+   - Export the fine-tuned weights plus the learned voice pack (`voices/luxembourgish_male.pt` equivalent).
+   - Update the Luxembourgish pipeline configuration to point at the new voice.
+   - Capture metrics: loss curves, pitch RMSE, mel reconstruction loss, plus audio samples for listening tests.
 
-## Next Steps
+## Deliverables Expected from This Directory
 
-Each file contains detailed comments explaining:
-- What the component does
-- Input/output shapes and formats
-- Integration points with Kokoro architecture
-- Usage in the training pipeline
+- Well-scoped TODO blocks or stub implementations for each module listed above.
+- Clear instructions for running offline preprocessing (probably a separate script/notebook referenced from here).
+- Rationale for any architectural tweaks (e.g. whether to fine-tune the decoder fully).
+- Validation checklist before we declare the Luxembourgish fine-tune “done”.
 
-Start implementing from top to bottom, testing each component before moving to the next.
-
-## Usage (Future)
-
-```python
-from training import TrainingConfig, train
-
-config = TrainingConfig(
-    base_model_path='base_model/kokoro-v1_0.pth',
-    train_data_dir='data/luxembourgish_male_corpus/train',
-    test_data_dir='data/luxembourgish_male_corpus/test',
-    batch_size=4,
-    learning_rate=1e-4,
-    num_epochs=50
-)
-
-train(config)
-```
-
-## Output
-
-Fine-tuned single-speaker Luxembourgish TTS model compatible with:
-```python
-from kokoro import KPipeline
-
-pipeline = KPipeline(lang_code='l')  # Luxembourgish
-audio = pipeline("Moien alleguer, wéi geet et?", voice='luxembourgish_male')
-```
-
+Once these decisions are locked in, we can start turning each file from prose into code.

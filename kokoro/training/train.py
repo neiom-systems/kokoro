@@ -1,58 +1,55 @@
 """
-Main Training Script for Luxembourgish Fine-Tuning
+Training orchestration blueprint.
 
-Orchestrates the complete training pipeline for single-speaker Luxembourgish TTS.
+This script will eventually wire together the dataset, model, losses, and optimiser to
+fine-tune Kokoro on the Luxembourgish corpus. Before coding, capture the control flow
+and key design decisions so implementation is straightforward.
 
-Training Flow:
-1. Pre-Training Setup:
-   - Extract single speaker embedding [510, 1, 256] from reference Luxembourgish audio
-   - Cache embedding to disk (reused for all 32k samples)
-   - Extract F0 and durations for all samples (optional: cache to disk)
-   - Verify data alignment: 28,800 train + 3,200 test samples
+High-level flow
+---------------
+1. **Initialisation**
+   - Load `TrainingConfig` (see `config.py`) and set random seeds.
+   - Instantiate the Luxembourgish voice table via `speaker_encoder` utilities.
+   - Build `TrainableKModel`, optionally freezing ALBERT/text encoder layers based on
+     config.
+   - Prepare optimiser parameter groups (separate LR for voice table vs. rest) and the
+     chosen scheduler.
+   - Set up AMP scaler, gradient clipping threshold, and logging backends (tensorboard,
+     wandb, plain CSV—pick one).
 
-2. Model Initialization:
-   - Load TrainableKModel from base_model/kokoro-v1_0.pth (312 MB, 82M params)
-   - Handle 'module.' prefix from DataParallel save
-   - Option to freeze BERT (12 layers, ~half the model) for faster training
-   - Move to GPU and set to training mode
+2. **Data pipelines**
+   - Create `LuxembourgishDataset` instances for train/val splits with cached features.
+   - Wrap them in `DataLoader`s with custom `collate_fn`, `pin_memory=True`, and the
+     configured number of workers.
+   - Sanity-check a batch: verify phoneme lengths, duration sums, mel shapes, and the
+     selected voice rows.
 
-3. Data Loading:
-   - Initialize LuxembourgishDataset for train/test splits
-   - Create DataLoaders with collate function for variable-length sequences
-   - Batch size: 4-8 (limited by memory due to [510, 1, 256] embeddings per sample)
-   - Workers: 4-8 for parallel data loading
+3. **Training loop**
+   - For each epoch:
+       a. Optionally unfreeze additional submodules according to the freeze schedule.
+       b. Iterate over training batches:
+            - Move tensors to device.
+            - Call `model.forward(batch, use_teacher_durations=epoch < tf_epochs, ...)`.
+            - Compute individual losses via `losses.compute(...)`, aggregate weighted sum.
+            - Backpropagate with AMP, apply gradient clipping, and step optimiser.
+            - Log metrics every `log_interval`.
+       c. Run validation without gradient updates; report losses and, periodically,
+          synthesize a few fixed sentences for qualitative review.
+       d. Step scheduler based on policy (per-step or per-epoch).
+       e. Checkpoint on improvement (best validation STFT) and keep periodic snapshots.
 
-4. Training Loop (per epoch):
-   - For each batch:
-     a. Phonemize text with misaki.lb.LBG2P() → input_ids (max 510 tokens)
-     b. Forward pass: model(input_ids, speaker_embedding) → audio, duration, F0
-     c. Compute losses: duration loss + F0 loss + reconstruction loss
-     d. Backward pass and optimizer step
-     e. Log: loss values, gradient norms, learning rate
-   
-5. Validation (per epoch):
-   - Evaluate on 3,200 test samples
-   - Generate sample audio for qualitative assessment
-   - Compute validation losses (no gradient updates)
-   - Early stopping based on validation loss
+4. **Post-training**
+   - Save the final fine-tuned checkpoint (`model_state_dict`, `optimizer`, `config`).
+   - Export the learned voice table to `voices/lb_max.pt` so inference can load it via `voice="lb_max"`.
+   - Dump evaluation artefacts (loss curves, audio samples, JSON summary).
 
-6. Checkpointing:
-   - Save model state every N epochs to checkpoints/
-   - Save best model based on validation loss
-   - Include: model weights, optimizer state, epoch number, config
+Operational considerations
+-------------------------
+- Implement a robust resume mechanism (load checkpoint, restore scheduler/scaler state).
+- Handle gradient accumulation if the effective batch size is too small.
+- Support multi-GPU (DDP) down the line; keep data loaders and logging compatible.
+- Include guardrails: detect NaNs, exploding losses, misaligned durations.
 
-7. Post-Training:
-   - Load best checkpoint
-   - Generate test samples for Luxembourgish voice quality assessment
-   - Export trained model for inference via kokoro.pipeline.KPipeline(lang_code='l')
-
-Training configuration:
-- Epochs: 50-100 (monitor validation loss for early stopping)
-- Learning rate: 1e-4 (Adam/AdamW)
-- Gradient clipping: 1.0 (prevent explosion)
-- Loss weights: duration=1.0, F0=0.5, reconstruction=1.0
-- Freeze BERT: Configurable (faster training, may reduce quality)
-
-Output: Fine-tuned Luxembourgish single-speaker TTS model compatible with Kokoro pipeline.
+Once this plan is stable, translate each section into executable code with clear hooks
+for experimentation.
 """
-
