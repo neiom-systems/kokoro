@@ -20,7 +20,7 @@ except ImportError as exc:  # pragma: no cover - torchaudio is required for audi
     raise RuntimeError("torchaudio is required for speaker embedding extraction") from exc
 
 try:
-    from transformers import AutoFeatureExtractor, AutoModel, AutoProcessor
+    from transformers import AutoFeatureExtractor, AutoModel
 except ImportError as exc:  # pragma: no cover - huggingface transformers required for WavLM/HuBERT
     raise RuntimeError("Install 'transformers' to use the speaker encoder utilities") from exc
 
@@ -79,22 +79,15 @@ class AverageSpeakerEmbedding:
 
     def __init__(self, cfg: SpeakerEncoderConfig) -> None:
         self.cfg = cfg
-        try:
-            self.processor = AutoProcessor.from_pretrained(cfg.model_name, use_safetensors=True)
-        except (TypeError, ValueError, OSError):
-            logger.warning(
-                "Falling back to AutoFeatureExtractor for %s (processor loading failed)",
-                cfg.model_name,
-            )
-            self.processor = AutoFeatureExtractor.from_pretrained(cfg.model_name)
+        self.processor = AutoFeatureExtractor.from_pretrained(cfg.model_name)
         self.model = AutoModel.from_pretrained(
             cfg.model_name,
             use_safetensors=True,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else None,
         )
         device = cfg.device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(device)
         self.model.to(self.device).eval()
+        self.model_dtype = next(self.model.parameters()).dtype
         logger.info("Loaded speaker encoder %s on %s", cfg.model_name, self.device)
 
     @torch.no_grad()
@@ -102,11 +95,15 @@ class AverageSpeakerEmbedding:
         embeddings: List[torch.Tensor] = []
         for path in audio_paths:
             waveform = load_audio_waveform(path, self.cfg.sample_rate).to(self.device)
-            if hasattr(self.processor, "__call__"):
-                inputs = self.processor(waveform, sampling_rate=self.cfg.sample_rate, return_tensors="pt")
-            else:  # safeguard, though unlikely
-                raise RuntimeError("Processor/feature extractor does not support call interface")
+            inputs = self.processor(
+                waveform,
+                sampling_rate=self.cfg.sample_rate,
+                return_tensors="pt",
+            )
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            for key, value in inputs.items():
+                if torch.is_floating_point(value):
+                    inputs[key] = value.to(self.model_dtype)
             outputs = self.model(**inputs)
             hidden_states = outputs.last_hidden_state
             if self.cfg.layer is not None and hasattr(outputs, "hidden_states"):
