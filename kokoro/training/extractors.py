@@ -93,7 +93,7 @@ class MelConfig:
 
 @dataclass(slots=True)
 class F0Config:
-    method: str = "fast"  # Changed default to fast method for better performance
+    method: str = "fast"  # ALWAYS use fast - NEVER use pyworld/pyin
     min_f0: float = 60.0
     max_f0: float = 700.0
     voicing_threshold: float = 0.6
@@ -360,14 +360,16 @@ def extract_f0_fast(audio: np.ndarray, mel_cfg: MelConfig, f0_cfg: F0Config, fra
         fmax=f0_cfg.max_f0,
     )
     
-    # Extract the most prominent pitch at each frame
-    f0 = []
-    for t in range(pitches.shape[1]):
-        index = magnitudes[:, t].argmax()
-        pitch = pitches[index, t] if magnitudes[index, t] > 0 else 0.0
-        f0.append(pitch)
+    # Vectorized extraction of most prominent pitch at each frame (much faster than loop)
+    # Get indices of max magnitude for each time frame
+    max_indices = magnitudes.argmax(axis=0)
+    # Use advanced indexing to get the pitch at max magnitude positions
+    f0 = pitches[max_indices, np.arange(pitches.shape[1])]
+    # Set to zero where magnitude is zero
+    max_mags = magnitudes[max_indices, np.arange(pitches.shape[1])]
+    f0[max_mags <= 0] = 0.0
     
-    f0 = np.array(f0, dtype=np.float32)
+    f0 = f0.astype(np.float32)
     if abs(len(f0) - frame_count) > 1:
         f0 = librosa.util.fix_length(f0, size=frame_count)
     
@@ -376,15 +378,17 @@ def extract_f0_fast(audio: np.ndarray, mel_cfg: MelConfig, f0_cfg: F0Config, fra
 
 
 def extract_f0(audio: np.ndarray, mel_cfg: MelConfig, f0_cfg: F0Config, frame_count: int) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
-    method = f0_cfg.method.lower()
-    if method == "pyworld":
-        f0, uv = extract_f0_pyworld(audio, mel_cfg, f0_cfg, frame_count)
-    elif method == "pyin":
-        f0, uv = extract_f0_pyint(audio, mel_cfg, f0_cfg, frame_count)
-    elif method == "fast":
-        f0, uv = extract_f0_fast(audio, mel_cfg, f0_cfg, frame_count)
-    else:
-        raise ValueError(f"Unsupported f0 extraction method '{method}'. Use 'pyworld', 'pyin', or 'fast'")
+    """Always use fast F0 extraction for Luxembourgish - ignore config setting."""
+    import time
+    start = time.time()
+    
+    # ALWAYS use fast method regardless of config
+    f0, uv = extract_f0_fast(audio, mel_cfg, f0_cfg, frame_count)
+    
+    elapsed = time.time() - start
+    if elapsed > 3.0:  # Log if F0 extraction is slow
+        logger.warning("F0 extraction took %.2fs for %.2fs audio", elapsed, len(audio)/mel_cfg.sample_rate)
+    
     return torch.from_numpy(f0).float(), torch.from_numpy(uv).float()
 
 
