@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Mapping, MutableMapping, Optional, Tuple
@@ -270,6 +271,7 @@ def train_one_epoch(
     log_interval = cfg.runtime.log_interval
     batches_processed = 0
     for batch_idx, batch in enumerate(train_loader, start=1):
+        batch_start = time.time()
         if batch_idx == 1:
             logger.info("Starting first training batch (may take a moment while kernels warm up)")
         batch = dict(batch)
@@ -280,6 +282,7 @@ def train_one_epoch(
 
         use_teacher = epoch < cfg.model.teacher_force_epochs
         autocast_enabled = cfg.optim.use_amp and device.type == "cuda"
+        forward_start = time.time()
         with torch.amp.autocast(device_type="cuda", enabled=autocast_enabled):
             output = model(
                 batch,
@@ -288,6 +291,13 @@ def train_one_epoch(
             )
             loss_components = compute_loss(loss_fn, output, batch)
             loss = loss_components["total"] / grad_accum
+        forward_time = time.time() - forward_start
+        if batch_idx == 1:
+            logger.info(
+                "First forward pass complete (%.2fs) | total=%.4f",
+                forward_time,
+                loss_components["total"].item(),
+            )
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -299,9 +309,13 @@ def train_one_epoch(
                 (loss_components.get("stft_sc", torch.tensor(0.0)) + loss_components.get("stft_mag", torch.tensor(0.0))).item(),
             )
 
+        backward_start = time.time()
         scaler.scale(loss).backward()
+        if batch_idx == 1:
+            logger.info("First backward pass complete (%.2fs)", time.time() - backward_start)
 
         if batch_idx % grad_accum == 0:
+            opt_start = time.time()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.optim.grad_clip_norm)
             scaler.step(optimizer)
@@ -310,6 +324,13 @@ def train_one_epoch(
             if scheduler is not None:
                 scheduler.step()
             global_step += 1
+            step_time = time.time() - opt_start
+            if batch_idx == grad_accum:
+                logger.info(
+                    "Completed first optimizer step (batch %.2fs, step %.2fs)",
+                    time.time() - batch_start,
+                    step_time,
+                )
             if writer is None and global_step % log_interval == 0:
                 logger.info(
                     "Step %d | total=%.4f dur=%.4f f0=%.4f stft=%.4f",
