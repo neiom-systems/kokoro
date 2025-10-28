@@ -342,7 +342,21 @@ def train_one_epoch(
             )
 
         backward_start = time.time()
-        scaler.scale(loss).backward()
+        try:
+            scaler.scale(loss).backward()
+        except torch.cuda.OutOfMemoryError as exc:
+            logger.error(
+                "OOM during backward at batch %d (epoch %d, utt_ids=%s): %s",
+                batch_idx,
+                epoch,
+                batch.get("utt_ids", []),
+                exc,
+            )
+            optimizer.zero_grad(set_to_none=True)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            prev_iter_end = time.time()
+            continue
         backward_time = time.time() - backward_start
         if batch_idx == 1:
             logger.info("First backward pass complete (%.2fs)", backward_time)
