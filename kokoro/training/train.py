@@ -270,6 +270,8 @@ def train_one_epoch(
     log_interval = cfg.runtime.log_interval
     batches_processed = 0
     for batch_idx, batch in enumerate(train_loader, start=1):
+        if batch_idx == 1:
+            logger.info("Starting first training batch (may take a moment while kernels warm up)")
         batch = dict(batch)
         move_batch_to_device(batch, device)
         audio_paths = batch.get("audio_paths", [])
@@ -308,6 +310,15 @@ def train_one_epoch(
             if scheduler is not None:
                 scheduler.step()
             global_step += 1
+            if writer is None and global_step % log_interval == 0:
+                logger.info(
+                    "Step %d | total=%.4f dur=%.4f f0=%.4f stft=%.4f",
+                    global_step,
+                    loss_components["total"].item(),
+                    (loss_components.get("duration_bce", torch.tensor(0.0)) + loss_components.get("duration_l1", torch.tensor(0.0))).item(),
+                    loss_components.get("f0", torch.tensor(0.0)).item() if "f0" in loss_components else 0.0,
+                    (loss_components.get("stft_sc", torch.tensor(0.0)) + loss_components.get("stft_mag", torch.tensor(0.0))).item(),
+                )
 
             if writer is not None and global_step % log_interval == 0:
                 for key, value in loss_components.items():

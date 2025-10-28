@@ -60,5 +60,5 @@ steps_per_val = 500
 num_workers = 8  # Increased for better performance
 seed = 1337
 deterministic = false
-log_interval = 50
+log_interval = 5
 checkpoint_interval_steps = 10000
