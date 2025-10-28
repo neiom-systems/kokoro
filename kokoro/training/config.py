@@ -258,6 +258,15 @@ class RuntimeConfig:
 
 
 @dataclass(slots=True)
+class F0Config:
+    """F0 extraction configuration."""
+    method: str = "fast"
+    min_f0: float = 60.0
+    max_f0: float = 700.0
+    voicing_threshold: float = 0.6
+
+
+@dataclass(slots=True)
 class TrainingConfig:
     """Top-level container for all fine-tuning configuration blocks."""
 
@@ -267,6 +276,7 @@ class TrainingConfig:
     optim: OptimConfig = field(default_factory=OptimConfig)
     losses: LossConfig = field(default_factory=LossConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    f0: F0Config = field(default_factory=F0Config)
 
     def __post_init__(self) -> None:
         self._validate_cross_dependencies()

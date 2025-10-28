@@ -93,7 +93,7 @@ class MelConfig:
 
 @dataclass(slots=True)
 class F0Config:
-    method: str = "pyworld"
+    method: str = "fast"  # Changed default to fast method for better performance
     min_f0: float = 60.0
     max_f0: float = 700.0
     voicing_threshold: float = 0.6
@@ -295,13 +295,42 @@ def extract_f0_pyint(audio: np.ndarray, mel_cfg: MelConfig, f0_cfg: F0Config, fr
     return f0, uv
 
 
+def extract_f0_fast(audio: np.ndarray, mel_cfg: MelConfig, f0_cfg: F0Config, frame_count: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Fast F0 extraction using librosa's piptrack (much faster than pyworld/pyin)."""
+    # Use piptrack for fast F0 estimation
+    pitches, magnitudes = librosa.piptrack(
+        y=audio,
+        sr=mel_cfg.sample_rate,
+        hop_length=mel_cfg.hop_length,
+        fmin=f0_cfg.min_f0,
+        fmax=f0_cfg.max_f0,
+    )
+    
+    # Extract the most prominent pitch at each frame
+    f0 = []
+    for t in range(pitches.shape[1]):
+        index = magnitudes[:, t].argmax()
+        pitch = pitches[index, t] if magnitudes[index, t] > 0 else 0.0
+        f0.append(pitch)
+    
+    f0 = np.array(f0, dtype=np.float32)
+    if abs(len(f0) - frame_count) > 1:
+        f0 = librosa.util.fix_length(f0, size=frame_count)
+    
+    uv = (f0 > 0).astype(np.float32)
+    return f0, uv
+
+
 def extract_f0(audio: np.ndarray, mel_cfg: MelConfig, f0_cfg: F0Config, frame_count: int) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
-    if f0_cfg.method.lower() == "pyworld":
+    method = f0_cfg.method.lower()
+    if method == "pyworld":
         f0, uv = extract_f0_pyworld(audio, mel_cfg, f0_cfg, frame_count)
-    elif f0_cfg.method.lower() == "pyin":
+    elif method == "pyin":
         f0, uv = extract_f0_pyint(audio, mel_cfg, f0_cfg, frame_count)
+    elif method == "fast":
+        f0, uv = extract_f0_fast(audio, mel_cfg, f0_cfg, frame_count)
     else:
-        raise ValueError(f"Unsupported f0 extraction method '{f0_cfg.method}'")
+        raise ValueError(f"Unsupported f0 extraction method '{method}'. Use 'pyworld', 'pyin', or 'fast'")
     return torch.from_numpy(f0).float(), torch.from_numpy(uv).float()
 
 
@@ -405,6 +434,7 @@ class FeatureExtractor:
         
         # Log device info and CUDA availability
         logger.info("Feature extraction using device: %s", self.device)
+        logger.info("F0 extraction method: %s", self.cfg.f0.method)
         if torch.cuda.is_available():
             logger.info("CUDA is available with %d device(s)", torch.cuda.device_count())
             if self.device.type == "cuda":
@@ -412,6 +442,9 @@ class FeatureExtractor:
         else:
             logger.warning("CUDA not available, using CPU (this will be slow!)")
             logger.warning("Consider using --mel-device cuda if you have a GPU")
+        
+        if self.cfg.f0.method == "fast":
+            logger.info("Using fast F0 extraction (librosa piptrack) for better performance")
 
     def process(
         self,
@@ -492,6 +525,11 @@ class FeatureExtractor:
         f0, uv = extract_f0(audio, self.cfg.mel, self.cfg.f0, frame_count)
         f0_time = time.time() - f0_start
         logger.debug("Voiced frames: %d / %d [%.2fs]", int(uv.sum().item()), frame_count, f0_time)
+        
+        # Log if F0 extraction is slow
+        if f0_time > 2.0:
+            logger.warning("Slow F0 extraction (%.2fs) for %s. Consider using method='fast' in config", 
+                          f0_time, audio_path.stem)
         
         # Time noise computation
         noise_start = time.time()

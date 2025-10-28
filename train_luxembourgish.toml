@@ -17,6 +17,12 @@ recompute_features = false
 use_cache = true
 forced_aligner = "mfa"
 
+# F0 extraction configuration for faster processing
+[f0]
+method = "fast"  # Use fast F0 extraction instead of pyworld (much faster)
+min_f0 = 60.0
+max_f0 = 700.0
+
 [model]
 freeze_bert_epochs = 10
 freeze_text_encoder_epochs = 5

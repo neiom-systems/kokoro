@@ -29,6 +29,12 @@ def configure_feature_extractor(
     feature_cfg.mel.hop_length = cfg.data.hop_length
     feature_cfg.vocab_path = cfg.paths.config_json
     feature_cfg.mel_device = mel_device
+    
+    # Configure F0 extraction from training config
+    feature_cfg.f0.method = cfg.f0.method
+    feature_cfg.f0.min_f0 = cfg.f0.min_f0
+    feature_cfg.f0.max_f0 = cfg.f0.max_f0
+    feature_cfg.f0.voicing_threshold = cfg.f0.voicing_threshold
 
     try:
         with open(cfg.paths.config_json, "r", encoding="utf-8") as handle:
@@ -122,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=max(1, (os.cpu_count() or 4) // 2),
+        default=max(4, (os.cpu_count() or 8) - 2),  # Use more workers, leave 2 cores free
         help="Number of parallel workers for feature extraction",
     )
     parser.add_argument(
