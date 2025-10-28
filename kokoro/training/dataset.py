@@ -84,7 +84,7 @@ def _load_from_npz(path: Path) -> CachedSample:
 
 
 def _load_from_pt(path: Path) -> CachedSample:
-    payload = torch.load(path, map_location="cpu", weights_only=True)
+    payload = torch.load(path, map_location="cpu")
     if not isinstance(payload, Mapping):
         raise TypeError(f"{path}: expected mapping payload, found {type(payload).__name__}")
     for key in ("input_ids", "durations", "mel", "f0"):
