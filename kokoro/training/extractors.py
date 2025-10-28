@@ -143,6 +143,7 @@ class PhonemeTokenizer:
     # Mapping for Luxembourgish phonemes not in Kokoro vocab to similar phonemes
     LUXEMBOURGISH_PHONEME_MAPPING = {
         'ʑ': 'ʒ',  # voiced postalveolar fricative -> voiced postalveolar fricative (English)
+        'g': 'ɡ',  # ASCII 'g' -> IPA 'ɡ' (U+0261, hard g sound)
         # Add more mappings as needed
     }
 

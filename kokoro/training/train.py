@@ -52,7 +52,7 @@ def load_json(path: Path) -> Mapping[str, object]:
 
 
 def load_voice_tensor(path: Path) -> torch.Tensor:
-    payload = torch.load(path, map_location="cpu")
+    payload = torch.load(path, map_location="cpu", weights_only=True)
     if isinstance(payload, torch.Tensor):
         tensor = payload
     elif isinstance(payload, Mapping):
@@ -435,7 +435,7 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
 
     if resume is not None and resume.exists():
         logger.info("Resuming from checkpoint %s", resume)
-        state = torch.load(resume, map_location=device)
+        state = torch.load(resume, map_location=device, weights_only=True)
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
         scaler.load_state_dict(state["scaler"])

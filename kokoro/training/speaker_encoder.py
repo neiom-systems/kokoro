@@ -242,7 +242,7 @@ def save_voice_table(artifacts: VoiceTableArtifacts, path: Path) -> None:
 
 
 def load_voice_table(path: Path) -> VoiceTableArtifacts:
-    payload = torch.load(path, map_location="cpu")
+    payload = torch.load(path, map_location="cpu", weights_only=True)
     if "table" not in payload:
         raise KeyError(f"Voice table file missing 'table' tensor: {path}")
     logger.info("Loaded voice table from %s", path)
