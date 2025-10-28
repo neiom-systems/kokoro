@@ -43,7 +43,7 @@ scheduler = "cosine"
 warmup_steps = 1000
 min_lr = 1e-6
 grad_clip_norm = 1.0
-grad_accum_steps = 2
+grad_accum_steps = 1
 use_amp = false
 
 [losses]

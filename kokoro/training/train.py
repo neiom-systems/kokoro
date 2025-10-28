@@ -551,6 +551,8 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
     optimizer = create_optimizer(cfg, model)
     train_loader, val_loader = prepare_dataloaders(cfg)
     total_steps = cfg.runtime.epochs * math.ceil(len(train_loader) / max(1, cfg.optim.grad_accum_steps))
+    if cfg.runtime.max_steps is not None:
+        total_steps = min(total_steps, cfg.runtime.max_steps)
     logger.info("Total optimisation steps across training: %d", total_steps)
     scheduler = create_scheduler(cfg, optimizer, total_steps)
 
