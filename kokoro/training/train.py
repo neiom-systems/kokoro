@@ -264,8 +264,10 @@ def train_one_epoch(
     grad_accum = cfg.optim.grad_accum_steps
     log_interval = cfg.runtime.log_interval
     batches_processed = 0
+    prev_iter_end = time.time()
     for batch_idx, batch in enumerate(train_loader, start=1):
         batch_start = time.time()
+        data_time = batch_start - prev_iter_end
         if batch_idx == 1:
             logger.info("Starting first training batch (may take a moment while kernels warm up)")
         batch = dict(batch)
@@ -290,7 +292,9 @@ def train_one_epoch(
                 )
                 optimizer.zero_grad(set_to_none=True)
                 continue
+            loss_compute_start = time.time()
             loss_components = compute_loss(loss_fn, output, batch)
+            loss_time = time.time() - loss_compute_start
             total_value = loss_components["total"]
             if not torch.isfinite(total_value):
                 component_states = {
@@ -321,6 +325,12 @@ def train_one_epoch(
                 human_total.item(),
                 loss_components["total"].item(),
             )
+            logger.info(
+                "Timing breakdown | data=%.2fs forward=%.2fs loss=%.2fs",
+                data_time,
+                forward_time,
+                loss_time,
+            )
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -335,8 +345,9 @@ def train_one_epoch(
 
         backward_start = time.time()
         scaler.scale(loss).backward()
+        backward_time = time.time() - backward_start
         if batch_idx == 1:
-            logger.info("First backward pass complete (%.2fs)", time.time() - backward_start)
+            logger.info("First backward pass complete (%.2fs)", backward_time)
 
         if batch_idx % grad_accum == 0:
             opt_start = time.time()
@@ -351,9 +362,13 @@ def train_one_epoch(
             step_time = time.time() - opt_start
             if batch_idx == grad_accum:
                 logger.info(
-                    "Completed first optimizer step (batch %.2fs, step %.2fs)",
+                    "Completed first optimizer step (batch %.2fs, step %.2fs | data %.2fs fw %.2fs loss %.2fs bw %.2fs)",
                     time.time() - batch_start,
                     step_time,
+                    data_time,
+                    forward_time,
+                    loss_time,
+                    backward_time,
                 )
             if global_step % log_interval == 0:
                 dur_loss = (
@@ -366,13 +381,18 @@ def train_one_epoch(
                 ).item()
                 f0_loss = loss_components.get("f0", torch.tensor(0.0)).item()
                 logger.info(
-                    "Step %d | loss=%.4f (raw=%.2e) dur=%.4f f0=%.4f stft=%.4f",
+                    "Step %d | loss=%.4f (raw=%.2e) dur=%.4f f0=%.4f stft=%.4f | times data=%.2fs fw=%.2fs loss=%.2fs bw=%.2fs opt=%.2fs",
                     global_step,
                     human_total.item(),
                     loss_components["total"].item(),
                     dur_loss,
                     f0_loss,
                     stft_loss,
+                    data_time,
+                    forward_time,
+                    loss_time,
+                    backward_time,
+                    step_time,
                 )
 
                 if writer is not None:
@@ -386,6 +406,7 @@ def train_one_epoch(
 
         total_loss += human_total.item()
         total_loss_raw += loss_components["total"].item()
+        prev_iter_end = time.time()
         batches_processed += 1
 
     if batches_processed and batches_processed % grad_accum != 0:
@@ -501,6 +522,12 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
     device_str = cfg.runtime.device or ("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device(device_str)
     model = create_model(cfg, device)
+    if cfg.runtime.enable_compile:
+        if hasattr(torch, "compile"):
+            logger.info("Compiling model with torch.compile (mode=reduce-overhead)")
+            model = torch.compile(model, mode="reduce-overhead")  # type: ignore[assignment]
+        else:
+            logger.warning("enable_compile set but torch.compile is unavailable in this PyTorch version")
     optimizer = create_optimizer(cfg, model)
     train_loader, val_loader = prepare_dataloaders(cfg)
     total_steps = cfg.runtime.epochs * math.ceil(len(train_loader) / max(1, cfg.optim.grad_accum_steps))

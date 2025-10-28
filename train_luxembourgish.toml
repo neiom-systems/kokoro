@@ -65,3 +65,4 @@ log_interval = 5
 checkpoint_interval_steps = 10000
 prefetch_factor = 4
 persistent_workers = true
+enable_compile = true

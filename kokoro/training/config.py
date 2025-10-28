@@ -251,6 +251,7 @@ class RuntimeConfig:
     checkpoint_interval_steps: int = 10_000
     prefetch_factor: int = 2
     persistent_workers: bool = True
+    enable_compile: bool = False
 
     def __post_init__(self) -> None:
         _ensure_positive("epochs", self.epochs)
@@ -262,6 +263,8 @@ class RuntimeConfig:
         _ensure_positive("checkpoint_interval_steps", self.checkpoint_interval_steps)
         if self.num_workers > 0 and self.prefetch_factor <= 0:
             raise ValueError("prefetch_factor must be > 0 when num_workers > 0")
+        if not isinstance(self.enable_compile, bool):
+            raise TypeError("enable_compile must be a boolean")
 
 
 @dataclass(slots=True)
