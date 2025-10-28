@@ -594,7 +594,8 @@ class FeatureExtractor:
             "uv": result.uv,
             "num_frames": torch.tensor(result.num_frames, dtype=torch.long),
             "tokens": result.tokens,
-            "phoneme_ids": result.phoneme_ids,
+            "input_ids": result.phoneme_ids,  # Use 'input_ids' key for dataset compatibility
+            "phoneme_ids": result.phoneme_ids,  # Keep for backwards compatibility
             "phoneme_len_no_special": torch.tensor(result.phoneme_len_no_special, dtype=torch.long),
             "metadata": result.metadata,
         }

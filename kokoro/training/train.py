@@ -426,7 +426,7 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
         mel_kwargs=mel_kwargs,
     ).to(device)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=cfg.optim.use_amp)
+    scaler = torch.amp.GradScaler('cuda', enabled=cfg.optim.use_amp)
     writer = setup_logging(cfg.paths.log_dir)
 
     start_epoch = 0
