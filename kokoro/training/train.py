@@ -525,7 +525,10 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
     if cfg.runtime.enable_compile:
         if hasattr(torch, "compile"):
             logger.info("Compiling model with torch.compile (mode=reduce-overhead)")
-            model = torch.compile(model, mode="reduce-overhead")  # type: ignore[assignment]
+            try:
+                model = torch.compile(model, mode="reduce-overhead")  # type: ignore[assignment]
+            except Exception as exc:  # pragma: no cover - indutor failure fallback
+                logger.warning("torch.compile failed (%s); continuing without compilation", exc)
         else:
             logger.warning("enable_compile set but torch.compile is unavailable in this PyTorch version")
     optimizer = create_optimizer(cfg, model)
