@@ -210,6 +210,59 @@ def apply_preemphasis(waveform: np.ndarray, coeff: Optional[float]) -> np.ndarra
     return np.append(waveform[0], waveform[1:] - coeff * waveform[:-1])
 
 
+def compute_mel_spectrogram_batch(audio_list: List[np.ndarray], cfg: MelConfig, device: Optional[torch.device] = None) -> List[torch.FloatTensor]:
+    """Batch mel spectrogram computation for better GPU utilization."""
+    if not audio_list:
+        return []
+    
+    if torchaudio is not None and len(audio_list) > 1:
+        device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+        key = (
+            cfg.sample_rate,
+            cfg.n_fft,
+            cfg.hop_length,
+            cfg.win_length,
+            cfg.n_mels,
+            cfg.mel_fmin,
+            cfg.mel_fmax,
+            device.type,
+        )
+        if key not in _TORCHAUDIO_TRANSFORMS:
+            transform = torchaudio.transforms.MelSpectrogram(
+                sample_rate=cfg.sample_rate,
+                n_fft=cfg.n_fft,
+                hop_length=cfg.hop_length,
+                win_length=cfg.win_length,
+                n_mels=cfg.n_mels,
+                f_min=cfg.mel_fmin,
+                f_max=cfg.mel_fmax,
+                power=1.0,
+            )
+            _TORCHAUDIO_TRANSFORMS[key] = transform.to(device).eval()
+        transform = _TORCHAUDIO_TRANSFORMS[key]
+        
+        # Process in batch
+        processed_audio = []
+        for audio in audio_list:
+            audio = apply_preemphasis(audio, cfg.preemphasis)
+            processed_audio.append(audio)
+        
+        # Stack into batch tensor
+        max_len = max(len(a) for a in processed_audio)
+        batch_tensor = torch.zeros(len(processed_audio), max_len, device=device, dtype=torch.float32)
+        for i, audio in enumerate(processed_audio):
+            batch_tensor[i, :len(audio)] = torch.from_numpy(audio)
+        
+        with torch.no_grad():
+            mel_batch = transform(batch_tensor)
+        mel_batch = torch.clamp(mel_batch, min=1e-5).log()
+        
+        return [mel.cpu().float() for mel in mel_batch]
+    else:
+        # Fallback to individual processing
+        return [compute_mel_spectrogram(audio, cfg, device) for audio in audio_list]
+
+
 def compute_mel_spectrogram(audio: np.ndarray, cfg: MelConfig, device: Optional[torch.device] = None) -> torch.FloatTensor:
     audio = apply_preemphasis(audio, cfg.preemphasis)
     if torchaudio is not None:
@@ -462,11 +515,7 @@ class FeatureExtractor:
             logger.debug("Skipping %s (already exists)", output_path)
             return None
 
-        logger.debug("Processing utterance %s", audio_path.stem)
-        logger.debug("Raw text: %s", text)
-
-        # Time phonemization
-        phoneme_start = time.time()
+        # Fast processing without detailed timing (only time critical sections)
         phoneme_tokens = self.phonemizer(text)
         if not phoneme_tokens:
             raise ValueError("Empty phoneme sequence")
@@ -477,62 +526,30 @@ class FeatureExtractor:
             raise ValueError(
                 f"Phoneme sequence exceeds max length ({len(phonemes)} > {self.cfg.max_phoneme_tokens})"
             )
-        phoneme_time = time.time() - phoneme_start
-        logger.debug("Phonemes (%d): %s [%.2fs]", len(phonemes), " ".join(phonemes), phoneme_time)
 
-        # Time audio loading
-        audio_start = time.time()
         audio = load_audio(audio_path, self.cfg.mel.sample_rate)
         audio = trim_silence(audio, self.cfg.silence_trim_db)
-        audio_time = time.time() - audio_start
-        logger.debug("Audio loaded and trimmed [%.2fs]", audio_time)
 
-        # Time mel computation
-        mel_start = time.time()
         mel = compute_mel_spectrogram(audio, self.cfg.mel, self.device)
         frame_count = mel.shape[1]
-        mel_time = time.time() - mel_start
-        logger.debug("Mel shape for %s: %s [%.2fs]", audio_path.stem, tuple(mel.shape), mel_time)
 
-        # Time duration computation
-        duration_start = time.time()
         durations: Optional[torch.LongTensor] = None
         if alignment_path and alignment_path.exists():
             alignment_entries = load_textgrid(alignment_path)
             durations = durations_from_alignment(phonemes, alignment_entries, self.cfg.mel, self.cfg.alignment)
-            logger.debug("Duration sum=%d frames=%d", int(durations.sum().item()), frame_count)
         else:
             if self.cfg.require_alignments:
                 raise FileNotFoundError(f"Alignment file not found for {audio_path.stem}")
             durations = estimate_uniform_durations(len(phonemes), frame_count)
-            logger.debug(
-                "No alignment for %s; distributing %d frames uniformly across %d phonemes",
-                audio_path.stem,
-                frame_count,
-                len(phonemes),
-            )
 
         if not self.cfg.allow_frame_mismatch:
             if int(durations.sum().item()) != frame_count:
                 raise ValueError(
                     f"Duration sum {int(durations.sum().item())} != mel frames {frame_count}"
                 )
-        duration_time = time.time() - duration_start
-        logger.debug("Duration computation [%.2fs]", duration_time)
 
-        # Time F0 extraction
-        f0_start = time.time()
         f0, uv = extract_f0(audio, self.cfg.mel, self.cfg.f0, frame_count)
-        f0_time = time.time() - f0_start
-        logger.debug("Voiced frames: %d / %d [%.2fs]", int(uv.sum().item()), frame_count, f0_time)
         
-        # Log if F0 extraction is slow
-        if f0_time > 2.0:
-            logger.warning("Slow F0 extraction (%.2fs) for %s. Consider using method='fast' in config", 
-                          f0_time, audio_path.stem)
-        
-        # Time noise computation
-        noise_start = time.time()
         noise = None
         if frame_count > 0:
             frame_energy = torch.from_numpy(
@@ -544,16 +561,8 @@ class FeatureExtractor:
             ).squeeze(0)
             noise = torch.log(frame_energy.clamp(min=1e-6))
             noise = F.pad(noise, (0, frame_count - noise.shape[0]))[:frame_count]
-        noise_time = time.time() - noise_start
-        logger.debug("Noise computation [%.2fs]", noise_time)
 
-        # Time tokenization
-        token_start = time.time()
         phoneme_ids = self.tokenizer.encode(phonemes)
-        token_time = time.time() - token_start
-        logger.debug("Phoneme tokenization [%.2fs]", token_time)
-        # Time result creation and writing
-        write_start = time.time()
         result = ExtractionResult(
             mel=mel,
             durations=durations,
@@ -568,11 +577,11 @@ class FeatureExtractor:
         )
 
         self._write_result(output_path, result)
-        write_time = time.time() - write_start
         
+        # Only log timing for very slow files
         total_time = time.time() - start_time
-        logger.info("Processed %s: total=%.2fs (phoneme=%.2fs, audio=%.2fs, mel=%.2fs, f0=%.2fs, write=%.2fs)", 
-                   audio_path.stem, total_time, phoneme_time, audio_time, mel_time, f0_time, write_time)
+        if total_time > 5.0:
+            logger.warning("Slow processing (%.2fs) for %s", total_time, audio_path.stem)
         return result
 
     def _write_result(self, path: Path, result: ExtractionResult) -> None:
@@ -683,10 +692,18 @@ def run_split_extraction(
     logger.info("Starting feature extraction for %d items from %s", len(rows), metadata_csv)
     num_workers = max(1, num_workers)
 
-    # Create progress bar
+    # Create progress bar with better formatting
     progress_bar = None
     if tqdm:
-        progress_bar = tqdm(total=len(rows), desc="Extracting features", unit="files")
+        progress_bar = tqdm(
+            total=len(rows), 
+            desc="Extracting features", 
+            unit="files",
+            unit_scale=True,
+            dynamic_ncols=True,
+            miniters=1,  # Update every file
+            maxinterval=0.1  # Update at least every 100ms
+        )
 
     if num_workers == 1:
         for relative_path, text, _ in rows:
@@ -707,9 +724,12 @@ def run_split_extraction(
             
             if progress_bar:
                 progress_bar.update(1)
+                total_processed = len(summary.processed) + len(summary.skipped)
+                success_rate = len(summary.processed) / total_processed * 100 if total_processed > 0 else 100
                 progress_bar.set_postfix({
-                    'Success': len(summary.successes), 
-                    'Failed': len(summary.failures)
+                    'Success': len(summary.processed), 
+                    'Failed': len(summary.skipped),
+                    'Rate': f'{success_rate:.1f}%'
                 })
     else:
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -736,9 +756,12 @@ def run_split_extraction(
                 
                 if progress_bar:
                     progress_bar.update(1)
+                    total_processed = len(summary.processed) + len(summary.skipped)
+                    success_rate = len(summary.processed) / total_processed * 100 if total_processed > 0 else 100
                     progress_bar.set_postfix({
-                        'Success': len(summary.successes), 
-                        'Failed': len(summary.failures)
+                        'Success': len(summary.processed), 
+                        'Failed': len(summary.skipped),
+                        'Rate': f'{success_rate:.1f}%'
                     })
     
     if progress_bar:

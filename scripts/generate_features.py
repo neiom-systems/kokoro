@@ -128,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=max(4, (os.cpu_count() or 8) - 2),  # Use more workers, leave 2 cores free
+        default=max(8, (os.cpu_count() or 16)),  # Use all available cores aggressively
         help="Number of parallel workers for feature extraction",
     )
     parser.add_argument(
