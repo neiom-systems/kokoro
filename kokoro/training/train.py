@@ -36,6 +36,9 @@ LOG_LEVEL = os.environ.get("KOKORO_LOG_LEVEL", "INFO").upper()
 
 logger = logging.getLogger(__name__)
 
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -86,22 +89,27 @@ def prepare_dataloaders(cfg: TrainingConfig) -> Tuple[DataLoader, DataLoader]:
     )
 
     generator = torch.Generator().manual_seed(cfg.runtime.seed)
+    loader_common = {
+        "batch_size": cfg.runtime.batch_size,
+        "num_workers": cfg.runtime.num_workers,
+        "pin_memory": True,
+        "collate_fn": luxembourgish_collate,
+        "persistent_workers": cfg.runtime.persistent_workers and cfg.runtime.num_workers > 0,
+    }
+    if cfg.runtime.num_workers > 0:
+        loader_common["prefetch_factor"] = cfg.runtime.prefetch_factor
+
     train_loader = DataLoader(
         train_dataset,
-        batch_size=cfg.runtime.batch_size,
         shuffle=True,
-        num_workers=cfg.runtime.num_workers,
-        pin_memory=True,
-        collate_fn=luxembourgish_collate,
         generator=generator,
+        **loader_common,
     )
+    val_loader_kwargs = loader_common.copy()
     val_loader = DataLoader(
         val_dataset,
-        batch_size=cfg.runtime.batch_size,
         shuffle=False,
-        num_workers=cfg.runtime.num_workers,
-        pin_memory=True,
-        collate_fn=luxembourgish_collate,
+        **val_loader_kwargs,
     )
     logger.info(
         "Created dataloaders (train_batches=%d, val_batches=%d, batch_size=%d)",
@@ -177,11 +185,12 @@ def load_audio_batch(paths: Sequence[Path], sample_rate: int, device: torch.devi
         if sr != sample_rate:
             waveform = torchaudio.functional.resample(waveform, orig_freq=sr, new_freq=sample_rate)
         waveform = waveform.squeeze(0)
+        waveform = waveform.contiguous()
         max_length = max(max_length, waveform.numel())
         waveforms.append(waveform)
     batch = torch.zeros(len(waveforms), max_length, dtype=torch.float32, device=device)
     for idx, waveform in enumerate(waveforms):
-        batch[idx, : waveform.numel()] = waveform.to(device)
+        batch[idx, : waveform.numel()] = waveform.to(device, non_blocking=True)
     return batch
 
 
@@ -200,7 +209,7 @@ def move_batch_to_device(batch: MutableMapping[str, object], device: torch.devic
     }
     for key in tensor_keys:
         if key in batch and isinstance(batch[key], torch.Tensor):
-            batch[key] = batch[key].to(device)
+            batch[key] = batch[key].to(device, non_blocking=True)
 
 
 def compute_loss(
@@ -311,6 +320,7 @@ def train_one_epoch(
                 optimizer.zero_grad(set_to_none=True)
                 continue
             loss = loss_components["total"] / grad_accum
+            batch.pop("audio_target", None)
         forward_time = time.time() - forward_start
         if batch_idx == 1:
             logger.info(
@@ -422,6 +432,7 @@ def evaluate(
                 detach_voice=True,
             )
             components = compute_loss(loss_fn, output, batch)
+            batch.pop("audio_target", None)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     "Validation batch | total=%.4f stft=%.4f",
@@ -459,6 +470,17 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
     logger.debug("Resolved paths: %s", cfg.paths)
 
     set_seed(cfg.runtime.seed)
+
+    deterministic = cfg.runtime.deterministic
+    torch.backends.cudnn.deterministic = deterministic
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = not deterministic
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+        except AttributeError:
+            pass
+    torch.set_num_threads(1)
 
     base_config = load_json(cfg.paths.config_json)
     mel_kwargs = {

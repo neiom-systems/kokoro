@@ -246,6 +246,8 @@ class RuntimeConfig:
     device: Optional[str] = None
     log_interval: int = 50
     checkpoint_interval_steps: int = 10_000
+    prefetch_factor: int = 2
+    persistent_workers: bool = True
 
     def __post_init__(self) -> None:
         _ensure_positive("epochs", self.epochs)
@@ -255,6 +257,8 @@ class RuntimeConfig:
             raise ValueError(f"num_workers must be >= 0 (got {self.num_workers})")
         _ensure_positive("log_interval", self.log_interval)
         _ensure_positive("checkpoint_interval_steps", self.checkpoint_interval_steps)
+        if self.num_workers > 0 and self.prefetch_factor <= 0:
+            raise ValueError("prefetch_factor must be > 0 when num_workers > 0")
 
 
 @dataclass(slots=True)

@@ -43,7 +43,7 @@ warmup_steps = 1000
 min_lr = 1e-6
 grad_clip_norm = 1.0
 grad_accum_steps = 2
-use_amp = true
+use_amp = false
 
 [losses]
 lambda_dur = 1.0
@@ -57,8 +57,10 @@ voice_l2 = 1e-4
 epochs = 50
 batch_size = 4
 steps_per_val = 500
-num_workers = 8  # Increased for better performance
+num_workers = 12  # Increased for better performance
 seed = 1337
 deterministic = false
 log_interval = 5
 checkpoint_interval_steps = 10000
+prefetch_factor = 4
+persistent_workers = true
