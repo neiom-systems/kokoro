@@ -1,13 +1,48 @@
-"""
-Design skeleton for the Luxembourgish fine-tuning pipeline.
+"""Top-level exports for the Luxembourgish fine-tuning toolkit."""
 
-Nothing in this package is executable yet—each module currently stores design notes.
-Once we implement the concrete classes/functions, re-export them here (and populate
-``__all__``) so that downstream code can do ``from kokoro.training import …`` safely.
+from .config import (
+    TrainingConfig,
+    PathsConfig,
+    DataConfig,
+    ModelConfig,
+    OptimConfig,
+    LossConfig,
+    RuntimeConfig,
+)
+from .dataset import LuxembourgishDataset, luxembourgish_collate
+from .extractors import FeatureExtractionConfig, FeatureExtractor, run_split_extraction
+from .losses import LossComputer, STFTSpec
+from .model import TrainableKModel, TrainableKModelOutput
+from .speaker_encoder import (
+    TableGenerationConfig,
+    VoiceTableArtifacts,
+    generate_voice_table,
+    get_voice_rows,
+    load_voice_table,
+    save_voice_table,
+)
 
-While prototyping, keep imports disabled to avoid AttributeErrors from the doc-only
-modules.
-"""
-
-# TODO: Re-enable exports once the modules contain real implementations.
-__all__: list[str] = []
+__all__ = [
+    "TrainingConfig",
+    "PathsConfig",
+    "DataConfig",
+    "ModelConfig",
+    "OptimConfig",
+    "LossConfig",
+    "RuntimeConfig",
+    "LuxembourgishDataset",
+    "luxembourgish_collate",
+    "FeatureExtractionConfig",
+    "FeatureExtractor",
+    "run_split_extraction",
+    "LossComputer",
+    "STFTSpec",
+    "TrainableKModel",
+    "TrainableKModelOutput",
+    "TableGenerationConfig",
+    "VoiceTableArtifacts",
+    "generate_voice_table",
+    "get_voice_rows",
+    "load_voice_table",
+    "save_voice_table",
+]
