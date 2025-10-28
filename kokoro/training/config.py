@@ -12,7 +12,7 @@ import os
 
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
-from typing import Any, ClassVar, List, Mapping, MutableMapping, Optional, Tuple, Union, get_args, get_origin
+from typing import Any, ClassVar, List, Mapping, MutableMapping, Optional, Tuple, Union, get_args, get_origin, get_type_hints
 
 try:  # Python 3.11+
     import tomllib
@@ -351,10 +351,15 @@ class TrainingConfig:
         """Instantiate a configuration from a nested dictionary."""
 
         kwargs: MutableMapping[str, Any] = {}
+        # Use get_type_hints to resolve forward references
+        type_hints = get_type_hints(cls)
+        
         for field_info in fields(cls):
             name = field_info.name
-            section_cls = field_info.type
+            # Get the resolved type from type hints
+            section_cls = type_hints.get(name, field_info.type)
             section_data = raw.get(name, {})
+            
             if not dataclass_is_type(section_cls):
                 raise TypeError(f"Unsupported section type for '{name}': {section_cls!r}")
             kwargs[name] = build_dataclass(section_cls, section_data)
