@@ -419,7 +419,7 @@ class FeatureExtractor:
             logger.debug("Skipping %s (already exists)", output_path)
             return None
 
-        logger.info("Processing utterance %s", audio_path.stem)
+        logger.debug("Processing utterance %s", audio_path.stem)
         logger.debug("Raw text: %s", text)
 
         phoneme_tokens = self.phonemizer(text)
@@ -450,7 +450,7 @@ class FeatureExtractor:
             if self.cfg.require_alignments:
                 raise FileNotFoundError(f"Alignment file not found for {audio_path.stem}")
             durations = estimate_uniform_durations(len(phonemes), frame_count)
-            logger.warning(
+            logger.debug(
                 "No alignment for %s; distributing %d frames uniformly across %d phonemes",
                 audio_path.stem,
                 frame_count,
@@ -492,7 +492,7 @@ class FeatureExtractor:
         )
 
         self._write_result(output_path, result)
-        logger.info("Wrote features for %s → %s", audio_path.stem, output_path)
+        logger.debug("Wrote features for %s → %s", audio_path.stem, output_path)
         return result
 
     def _write_result(self, path: Path, result: ExtractionResult) -> None:
@@ -593,10 +593,20 @@ def run_split_extraction(
     skip_existing: bool = True,
     num_workers: int = 1,
 ) -> ExtractionSummary:
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        tqdm = None
+    
     summary = ExtractionSummary()
     rows = read_metadata(metadata_csv)
     logger.info("Starting feature extraction for %d items from %s", len(rows), metadata_csv)
     num_workers = max(1, num_workers)
+
+    # Create progress bar
+    progress_bar = None
+    if tqdm:
+        progress_bar = tqdm(total=len(rows), desc="Extracting features", unit="files")
 
     if num_workers == 1:
         for relative_path, text, _ in rows:
@@ -614,6 +624,13 @@ def run_split_extraction(
             else:
                 summary.add_failure(utt_id, err or "")
                 logger.warning("Failed to process %s: %s", utt_id, err)
+            
+            if progress_bar:
+                progress_bar.update(1)
+                progress_bar.set_postfix({
+                    'Success': len(summary.successes), 
+                    'Failed': len(summary.failures)
+                })
     else:
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = [
@@ -636,6 +653,16 @@ def run_split_extraction(
                 else:
                     summary.add_failure(utt_id, err or "")
                     logger.warning("Failed to process %s: %s", utt_id, err)
+                
+                if progress_bar:
+                    progress_bar.update(1)
+                    progress_bar.set_postfix({
+                        'Success': len(summary.successes), 
+                        'Failed': len(summary.failures)
+                    })
+    
+    if progress_bar:
+        progress_bar.close()
     manifest_path = output_root / "manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with manifest_path.open("w", encoding="utf-8") as handle:
