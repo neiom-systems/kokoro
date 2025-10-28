@@ -101,9 +101,16 @@ class AverageSpeakerEmbedding:
                 return_tensors="pt",
             )
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
+            # Fix attention mask type mismatch for WavLM
+            # The issue is that WavLM expects both attention_mask and key_padding_mask to be the same type
             for key, value in inputs.items():
-                if torch.is_floating_point(value):
+                if key == "attention_mask":
+                    # Convert attention_mask to boolean to match internal key_padding_mask
+                    inputs[key] = value.bool()
+                elif torch.is_floating_point(value):
                     inputs[key] = value.to(self.model_dtype)
+            
             outputs = self.model(**inputs)
             hidden_states = outputs.last_hidden_state
             if self.cfg.layer is not None and hasattr(outputs, "hidden_states"):

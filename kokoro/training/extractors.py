@@ -119,7 +119,6 @@ class FeatureExtractionConfig:
     vocab_path: Path = Path("base_model/config.json")
     require_alignments: bool = True
     mel_device: Optional[str] = None
-    mel_device: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -403,8 +402,16 @@ class FeatureExtractor:
         self.phonemizer = phonemizer or LuxembourgishPhonemizer()
         device_str = cfg.mel_device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(device_str)
-        device_str = cfg.mel_device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.device = torch.device(device_str)
+        
+        # Log device info and CUDA availability
+        logger.info("Feature extraction using device: %s", self.device)
+        if torch.cuda.is_available():
+            logger.info("CUDA is available with %d device(s)", torch.cuda.device_count())
+            if self.device.type == "cuda":
+                logger.info("Using GPU: %s", torch.cuda.get_device_name(self.device))
+        else:
+            logger.warning("CUDA not available, using CPU (this will be slow!)")
+            logger.warning("Consider using --mel-device cuda if you have a GPU")
 
     def process(
         self,
