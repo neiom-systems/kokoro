@@ -317,10 +317,9 @@ class LossComputer:
             components["mel"] = torch.zeros((), device=device)
 
         if self.cfg.lambda_stft > 0.0 and self.stft_loss is not None:
-            if "audio_target" in batch:
-                target_audio = batch["audio_target"].to(device)
-            else:
-                raise KeyError("Batch missing 'audio_target' required for STFT loss")
+            if "audio" not in batch:
+                raise KeyError("Batch missing 'audio' required for STFT loss")
+            target_audio = batch["audio"].to(device)
             sc, mag = self.stft_loss(output_map["audio"], target_audio)
             components["stft_sc"] = sc
             components["stft_mag"] = mag

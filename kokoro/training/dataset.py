@@ -17,6 +17,11 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 import torch
 
 try:
+    import torchaudio
+except ImportError as exc:  # pragma: no cover - torchaudio required for audio loading
+    raise RuntimeError("torchaudio is required to load raw audio for training") from exc
+
+try:
     import numpy as np
 except ImportError as exc:  # pragma: no cover - numpy is required for .npz caches
     raise RuntimeError("numpy is required for loading cached Luxembourgish features") from exc
@@ -294,6 +299,18 @@ class LuxembourgishDataset(torch.utils.data.Dataset):
                 sample.input_ids[:12].tolist(),
             )
 
+        waveform, sr = torchaudio.load(str(entry.audio_path))
+        if waveform.dim() > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+        if sr != self.data_config.sample_rate:
+            waveform = torchaudio.functional.resample(
+                waveform,
+                orig_freq=sr,
+                new_freq=self.data_config.sample_rate,
+            )
+        waveform = waveform.squeeze(0).contiguous().float()
+        waveform = torch.nan_to_num(waveform, nan=0.0, posinf=0.0, neginf=0.0)
+
         return {
             "utt_id": entry.utt_id,
             "text": entry.text,
@@ -307,6 +324,8 @@ class LuxembourgishDataset(torch.utils.data.Dataset):
             "f0": f0,
             "uv": uv,
             "voice_row": voice_row,
+            "audio": waveform,
+            "audio_len": waveform.numel(),
         }
 
     def _write_cache(self, cache_path: Path, sample: CachedSample) -> None:
@@ -389,6 +408,7 @@ def luxembourgish_collate(batch: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     max_seq_len = max(item["input_ids"].shape[0] for item in batch)
     max_dur_len = max(item["durations"].shape[0] for item in batch)
     max_frames = max(int(item["mel_frames"]) for item in batch)
+    max_audio_len = max(int(item["audio_len"]) for item in batch)
 
     input_ids = torch.full((batch_size, max_seq_len), fill_value=0, dtype=torch.long)
     phoneme_mask = torch.zeros((batch_size, max_seq_len), dtype=torch.bool)
@@ -400,6 +420,8 @@ def luxembourgish_collate(batch: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     uv = torch.zeros((batch_size, max_frames), dtype=torch.float32)
     voice_rows = torch.zeros(batch_size, dtype=torch.long)
     phoneme_lengths = torch.zeros(batch_size, dtype=torch.long)
+    audio = torch.zeros((batch_size, max_audio_len), dtype=torch.float32)
+    audio_mask = torch.zeros((batch_size, max_audio_len), dtype=torch.bool)
 
     texts: List[str] = []
     utt_ids: List[str] = []
@@ -430,6 +452,11 @@ def luxembourgish_collate(batch: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
 
         voice_rows[idx] = item["voice_row"]
 
+        audio_wave = item["audio"]
+        audio_len = audio_wave.shape[0]
+        audio[idx, :audio_len] = audio_wave
+        audio_mask[idx, :audio_len] = True
+
         texts.append(item["text"])
         utt_ids.append(item["utt_id"])
         sources.append(item["source"])
@@ -446,6 +473,8 @@ def luxembourgish_collate(batch: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         "f0": f0,
         "uv": uv,
         "voice_rows": voice_rows,
+        "audio": audio,
+        "audio_mask": audio_mask,
         "texts": texts,
         "utt_ids": utt_ids,
         "sources": sources,

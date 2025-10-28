@@ -11,7 +11,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import Dict, Mapping, MutableMapping, Optional, Tuple
 
 import numpy as np
 import torch
@@ -176,25 +176,6 @@ def create_scheduler(cfg: TrainingConfig, optimizer: Optimizer, total_steps: int
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def load_audio_batch(paths: Sequence[Path], sample_rate: int, device: torch.device) -> torch.Tensor:
-    waveforms: List[torch.Tensor] = []
-    max_length = 0
-    for path in paths:
-        waveform, sr = torchaudio.load(str(path))
-        if waveform.dim() > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
-        if sr != sample_rate:
-            waveform = torchaudio.functional.resample(waveform, orig_freq=sr, new_freq=sample_rate)
-        waveform = waveform.squeeze(0)
-        waveform = waveform.contiguous()
-        max_length = max(max_length, waveform.numel())
-        waveforms.append(waveform)
-    batch = torch.zeros(len(waveforms), max_length, dtype=torch.float32, device=device)
-    for idx, waveform in enumerate(waveforms):
-        batch[idx, : waveform.numel()] = waveform.to(device, non_blocking=True)
-    return batch
-
-
 def move_batch_to_device(batch: MutableMapping[str, object], device: torch.device) -> None:
     tensor_keys = {
         "input_ids",
@@ -207,6 +188,8 @@ def move_batch_to_device(batch: MutableMapping[str, object], device: torch.devic
         "f0",
         "uv",
         "voice_rows",
+        "audio",
+        "audio_mask",
     }
     for key in tensor_keys:
         if key in batch and isinstance(batch[key], torch.Tensor):
@@ -287,9 +270,7 @@ def train_one_epoch(
             logger.info("Starting first training batch (may take a moment while kernels warm up)")
         batch = dict(batch)
         move_batch_to_device(batch, device)
-        audio_paths = batch.get("audio_paths", [])
-        if audio_paths:
-            batch["audio_target"] = load_audio_batch(audio_paths, cfg.data.sample_rate, device)
+        # raw audio is already loaded by the dataset workers and included in the batch
 
         use_teacher = epoch < cfg.model.teacher_force_epochs
         autocast_enabled = cfg.optim.use_amp and device.type == "cuda"
@@ -331,7 +312,6 @@ def train_one_epoch(
                 optimizer.zero_grad(set_to_none=True)
                 continue
             loss = loss_components["total"] / grad_accum
-            batch.pop("audio_target", None)
         forward_time = time.time() - forward_start
         human_total = loss_components.get("total_normalized", loss_components["total"])
         if batch_idx == 1:
@@ -444,9 +424,7 @@ def evaluate(
         for batch in val_loader:
             batch = dict(batch)
             move_batch_to_device(batch, device)
-            audio_paths = batch.get("audio_paths", [])
-            if audio_paths:
-                batch["audio_target"] = load_audio_batch(audio_paths, cfg.data.sample_rate, device)
+            # audio already provided in batch
 
             output = model(
                 batch,
@@ -454,7 +432,6 @@ def evaluate(
                 detach_voice=True,
             )
             components = compute_loss(loss_fn, output, batch)
-            batch.pop("audio_target", None)
             human_total = components.get("total_normalized", components["total"])
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -470,7 +447,7 @@ def evaluate(
     mean_stft = total_stft / len(val_loader)
 
     if writer is not None:
-        writer.add_scalar("val/total", mean_loss, global_step)
+        writer.add_scalar("val/loss", mean_loss, global_step)
         writer.add_scalar("val/stft", mean_stft, global_step)
     return mean_loss, mean_stft
 
