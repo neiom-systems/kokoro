@@ -12,7 +12,7 @@ if [[ -z "${HF_TOKEN:-}" ]]; then
   exit 1
 fi
 
-VENV_PATH="${VENV_PATH:-$ROOT_DIR/.venv}"
+VENV_PATH="${VENV_PATH:-$WORKSPACE_DIR/.venv}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if [[ ! -d "$VENV_PATH" ]]; then
