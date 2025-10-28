@@ -1,0 +1,58 @@
+[paths]
+base_ckpt = "base_model/kokoro-v1_0.pth"
+config_json = "base_model/config.json"
+train_csv = "data/luxembourgish_male_corpus/train/metadata.csv"
+test_csv = "data/luxembourgish_male_corpus/test/metadata.csv"
+feature_root = "data/luxembourgish_male_corpus/artifacts"
+checkpoint_dir = "experiments/lb/checkpoints"
+log_dir = "experiments/lb/logs"
+voice_init = "experiments/lb/voices/lb_max.pt"
+voice_export_path = "experiments/lb/voices/lb_max.pt"
+
+[data]
+sample_rate = 24000
+hop_length = 240
+max_input_len = 510
+recompute_features = false
+use_cache = true
+forced_aligner = "mfa"
+
+[model]
+freeze_bert_epochs = 10
+freeze_text_encoder_epochs = 5
+teacher_force_epochs = 3
+train_voice_pack = true
+voice_pack_lr = 5e-4
+disable_complex_decoder = false
+max_duration_frames = 50
+
+[optim]
+optimizer = "adamw"
+lr = 1e-4
+weight_decay = 1e-2
+betas = [0.9, 0.98]
+eps = 1e-8
+scheduler = "cosine"
+warmup_steps = 1000
+min_lr = 1e-6
+grad_clip_norm = 1.0
+grad_accum_steps = 2
+use_amp = true
+
+[losses]
+lambda_dur = 1.0
+lambda_f0 = 1.0
+lambda_noise = 0.0
+lambda_stft = 1.0
+lambda_mel = 0.5
+voice_l2 = 1e-4
+
+[runtime]
+epochs = 50
+batch_size = 4
+steps_per_val = 500
+num_workers = 4
+seed = 1337
+deterministic = false
+log_interval = 50
+checkpoint_interval_steps = 10000
