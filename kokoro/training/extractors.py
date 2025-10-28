@@ -11,6 +11,8 @@ import json
 import logging
 import math
 import statistics
+import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -332,6 +334,19 @@ class FeatureExtractor:
         phonemes = self.phonemizer(text)
         if not phonemes:
             raise ValueError("Empty phoneme sequence")
+        # Split phoneme strings into individual symbols and remove combining marks
+        symbols: List[str] = []
+        for token in phonemes:
+            if not token:
+                continue
+            normalized = unicodedata.normalize("NFD", token)
+            for ch in normalized:
+                if unicodedata.category(ch) == "Mn":
+                    continue
+                symbols.append(ch)
+        phonemes = symbols
+        if not phonemes:
+            raise ValueError("Phoneme normalization produced an empty sequence")
         if len(phonemes) > self.cfg.max_phoneme_tokens:
             raise ValueError(
                 f"Phoneme sequence exceeds max length ({len(phonemes)} > {self.cfg.max_phoneme_tokens})"
@@ -461,6 +476,32 @@ def read_metadata(metadata_csv: Path) -> List[Tuple[str, str, str]]:
     return rows
 
 
+def _process_entry(
+    extractor: FeatureExtractor,
+    relative_path: str,
+    text: str,
+    audio_root: Path,
+    alignment_root: Optional[Path],
+    output_root: Path,
+    skip_existing: bool,
+) -> Tuple[bool, str, Optional[str]]:
+    utt_id = Path(relative_path).stem
+    audio_path = audio_root / relative_path
+    alignment_path = None if alignment_root is None else alignment_root / f"{utt_id}.TextGrid"
+    output_path = output_root / f"{utt_id}.pt"
+    try:
+        extractor.process(
+            text=text,
+            audio_path=audio_path,
+            alignment_path=alignment_path,
+            output_path=output_path,
+            skip_existing=skip_existing,
+        )
+        return True, utt_id, None
+    except Exception as exc:  # pragma: no cover - logging for user awareness
+        return False, utt_id, str(exc)
+
+
 def run_split_extraction(
     *,
     metadata_csv: Path,
@@ -469,30 +510,51 @@ def run_split_extraction(
     output_root: Path,
     extractor: FeatureExtractor,
     skip_existing: bool = True,
+    num_workers: int = 1,
 ) -> ExtractionSummary:
     summary = ExtractionSummary()
     rows = read_metadata(metadata_csv)
     logger.info("Starting feature extraction for %d items from %s", len(rows), metadata_csv)
-    for relative_path, text, _ in rows:
-        utt_id = Path(relative_path).stem
-        audio_path = audio_root / relative_path
-        alignment_path = None
-        if alignment_root is not None:
-            alignment_path = alignment_root / f"{utt_id}.TextGrid"
-        output_path = output_root / f"{utt_id}.pt"
-        try:
-            extractor.process(
-                text=text,
-                audio_path=audio_path,
-                alignment_path=alignment_path,
-                output_path=output_path,
-                skip_existing=skip_existing,
+    num_workers = max(1, num_workers)
+
+    if num_workers == 1:
+        for relative_path, text, _ in rows:
+            success, utt_id, err = _process_entry(
+                extractor,
+                relative_path,
+                text,
+                audio_root,
+                alignment_root,
+                output_root,
+                skip_existing,
             )
-        except Exception as exc:  # pragma: no cover - logging for user awareness
-            summary.add_failure(utt_id, str(exc))
-            logger.warning("Failed to process %s: %s", utt_id, exc)
-        else:
-            summary.add_success(utt_id)
+            if success:
+                summary.add_success(utt_id)
+            else:
+                summary.add_failure(utt_id, err or "")
+                logger.warning("Failed to process %s: %s", utt_id, err)
+    else:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(
+                    _process_entry,
+                    extractor,
+                    relative_path,
+                    text,
+                    audio_root,
+                    alignment_root,
+                    output_root,
+                    skip_existing,
+                )
+                for relative_path, text, _ in rows
+            ]
+            for future in as_completed(futures):
+                success, utt_id, err = future.result()
+                if success:
+                    summary.add_success(utt_id)
+                else:
+                    summary.add_failure(utt_id, err or "")
+                    logger.warning("Failed to process %s: %s", utt_id, err)
     manifest_path = output_root / "manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with manifest_path.open("w", encoding="utf-8") as handle:

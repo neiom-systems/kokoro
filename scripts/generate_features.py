@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import logging
 from pathlib import Path
@@ -57,6 +58,7 @@ def extract_for_split(
     extractor: FeatureExtractor,
     alignment_root: Path | None,
     force: bool,
+    num_workers: int,
 ) -> None:
     if split == "train":
         metadata_csv = cfg.paths.train_csv
@@ -74,6 +76,7 @@ def extract_for_split(
         output_root=output_root,
         extractor=extractor,
         skip_existing=not force,
+        num_workers=num_workers,
     )
     logging.info(
         "Completed feature extraction for %s: processed=%d, skipped=%d",
@@ -111,6 +114,12 @@ def parse_args() -> argparse.Namespace:
         default="INFO",
         help="Logging level (DEBUG, INFO, WARNING, ...)",
     )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=max(1, (os.cpu_count() or 4) // 2),
+        help="Number of parallel workers for feature extraction",
+    )
     return parser.parse_args()
 
 
@@ -132,6 +141,7 @@ def main() -> None:
             extractor=extractor,
             alignment_root=alignment_root,
             force=args.force,
+            num_workers=args.num_workers,
         )
 
 
