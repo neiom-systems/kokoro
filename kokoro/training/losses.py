@@ -42,6 +42,10 @@ class MultiResolutionSTFTLoss(nn.Module):
             self.register_buffer(name, window, persistent=False)
 
     def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if prediction.dtype != torch.float32:
+            prediction = prediction.to(torch.float32)
+        if target.dtype != torch.float32:
+            target = target.to(torch.float32)
         if prediction.dim() == 3:
             prediction = prediction.squeeze(1)
         if target.dim() == 3:
@@ -83,7 +87,9 @@ class MultiResolutionSTFTLoss(nn.Module):
             mag_loss = mag_loss + mag
 
         count = len(self.specs)
-        return sc_loss / count, mag_loss / count
+        sc_loss = sc_loss / count
+        mag_loss = mag_loss / count
+        return sc_loss, mag_loss
 
 
 class MelSpectrogramLoss(nn.Module):
@@ -118,6 +124,10 @@ class MelSpectrogramLoss(nn.Module):
         )
 
     def forward(self, prediction: torch.Tensor, target_mel: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
+        if prediction.dtype != torch.float32:
+            prediction = prediction.to(torch.float32)
+        if target_mel.dtype != torch.float32:
+            target_mel = target_mel.to(torch.float32)
         if prediction.dim() == 2:
             prediction = prediction.unsqueeze(1)
         mel_pred = self.transform(prediction)

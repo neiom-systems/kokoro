@@ -290,6 +290,26 @@ def train_one_epoch(
                 detach_voice=not cfg.model.train_voice_pack,
             )
             loss_components = compute_loss(loss_fn, output, batch)
+            total_value = loss_components["total"]
+            if not torch.isfinite(total_value):
+                component_states = {
+                    key: {
+                        "nan": torch.isnan(value).any().item(),
+                        "inf": torch.isinf(value).any().item(),
+                    }
+                    for key, value in loss_components.items()
+                    if isinstance(value, torch.Tensor)
+                }
+                logger.error(
+                    "Non-finite loss detected at batch %d (epoch %d). Component states: %s",
+                    batch_idx,
+                    epoch,
+                    component_states,
+                )
+                if "utt_ids" in batch:
+                    logger.error("Problematic utterances: %s", batch["utt_ids"])
+                optimizer.zero_grad(set_to_none=True)
+                continue
             loss = loss_components["total"] / grad_accum
         forward_time = time.time() - forward_start
         if batch_idx == 1:
@@ -353,7 +373,7 @@ def train_one_epoch(
                 if writer is not None:
                     for key, value in loss_components.items():
                         writer.add_scalar(f"train/{key}", value.item(), global_step)
-                writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
+                    writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
 
         total_loss += loss_components["total"].item()
         batches_processed += 1
@@ -368,7 +388,10 @@ def train_one_epoch(
             scheduler.step()
         global_step += 1
 
-    avg_loss = total_loss / len(train_loader)
+    denom = batches_processed if batches_processed > 0 else len(train_loader)
+    if denom == 0:
+        denom = 1
+    avg_loss = total_loss / denom
     return global_step, avg_loss
 
 
