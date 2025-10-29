@@ -11,7 +11,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Mapping, MutableMapping, Optional, Tuple
+from typing import Callable, Dict, Mapping, MutableMapping, Optional, Tuple, List
 
 import numpy as np
 import torch
@@ -209,6 +209,25 @@ class Checkpoint:
     best_score: float
 
 
+def build_checkpoint_state(
+    cfg: TrainingConfig,
+    model: TrainableKModel,
+    optimizer: Optimizer,
+    scaler: torch.cuda.amp.GradScaler,
+    checkpoint_state: Checkpoint,
+    scheduler: Optional[_LRScheduler],
+) -> Dict[str, object]:
+    state = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict(),
+        "checkpoint": checkpoint_state.__dict__,
+        "config": cfg.to_dict(),
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+    }
+    return state
+
+
 def save_checkpoint(
     cfg: TrainingConfig,
     model: TrainableKModel,
@@ -219,14 +238,7 @@ def save_checkpoint(
     is_best: bool,
     scheduler: Optional[_LRScheduler],
 ) -> None:
-    state = {
-        "model": model.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "scaler": scaler.state_dict(),
-        "checkpoint": checkpoint_state.__dict__,
-        "config": cfg.to_dict(),
-        "scheduler": scheduler.state_dict() if scheduler is not None else None,
-    }
+    state = build_checkpoint_state(cfg, model, optimizer, scaler, checkpoint_state, scheduler)
     path = cfg.paths.checkpoint_dir / "latest.pt"
     torch.save(state, path)
     if is_best:
@@ -255,6 +267,7 @@ def train_one_epoch(
     global_step: int,
     writer: Optional[SummaryWriter],
     scheduler: Optional[_LRScheduler],
+    checkpoint_hook: Optional[Callable[[int, bool], None]] = None,
 ) -> Tuple[int, float, bool]:
     model.train()
     total_loss = 0.0
@@ -416,6 +429,20 @@ def train_one_epoch(
                             writer.add_scalar(f"train/{key}", value.item(), global_step)
                     writer.add_scalar("train/total_raw", loss_components["total"].item(), global_step)
                     writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
+
+            should_checkpoint = False
+            force_checkpoint = False
+            if (
+                cfg.runtime.checkpoint_interval_steps
+                and cfg.runtime.checkpoint_interval_steps > 0
+                and global_step % cfg.runtime.checkpoint_interval_steps == 0
+            ):
+                should_checkpoint = True
+            if global_step in cfg.runtime.force_checkpoint_steps:
+                should_checkpoint = True
+                force_checkpoint = True
+            if should_checkpoint and checkpoint_hook is not None:
+                checkpoint_hook(global_step, force_checkpoint)
 
         total_loss += human_total.item()
         total_loss_raw += loss_components["total"].item()
@@ -584,11 +611,38 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
             scheduler.load_state_dict(state["scheduler"])
         logger.info("Resumed training from %s (epoch=%d, global_step=%d)", resume, start_epoch, global_step)
 
+    saved_steps: List[int] = []
+    force_steps = set(cfg.runtime.force_checkpoint_steps)
+
     for epoch in range(start_epoch, cfg.runtime.epochs):
         if epoch == cfg.model.freeze_bert_epochs:
             model.unfreeze_submodules(bert=True)
         if epoch == cfg.model.freeze_text_encoder_epochs:
             model.unfreeze_submodules(text_encoder=True)
+
+        def step_checkpoint_hook(step: int, force: bool) -> None:
+            checkpoint_state = Checkpoint(epoch=epoch, global_step=step, best_score=best_score)
+            state = build_checkpoint_state(cfg, model, optimizer, scaler, checkpoint_state, scheduler)
+            ckpt_dir = cfg.paths.checkpoint_dir
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(state, ckpt_dir / "latest.pt")
+            torch.save(state, ckpt_dir / f"step_{step}.pt")
+            saved_steps.append(step)
+            if force:
+                force_steps.add(step)
+            # Remove old checkpoints if exceeding retention and not forced
+            while len(saved_steps) > cfg.runtime.keep_step_checkpoints:
+                oldest = saved_steps.pop(0)
+                if oldest in force_steps:
+                    saved_steps.insert(0, oldest)
+                    # If all retained checkpoints are forced, stop pruning
+                    if len(saved_steps) >= cfg.runtime.keep_step_checkpoints:
+                        break
+                    continue
+                try:
+                    (ckpt_dir / f"step_{oldest}.pt").unlink()
+                except FileNotFoundError:
+                    pass
 
         global_step, train_loss, stop_training = train_one_epoch(
             cfg=cfg,
@@ -602,6 +656,7 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
             global_step=global_step,
             writer=writer,
             scheduler=scheduler,
+            checkpoint_hook=step_checkpoint_hook,
         )
 
         val_loss, val_stft = evaluate(

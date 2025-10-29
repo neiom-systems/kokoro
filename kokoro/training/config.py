@@ -256,6 +256,8 @@ class RuntimeConfig:
     persistent_workers: bool = True
     enable_compile: bool = False
     max_steps: Optional[int] = None
+    keep_step_checkpoints: int = 5
+    force_checkpoint_steps: Tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         _ensure_positive("epochs", self.epochs)
@@ -271,6 +273,9 @@ class RuntimeConfig:
             raise TypeError("enable_compile must be a boolean")
         if self.max_steps is not None and self.max_steps <= 0:
             raise ValueError("max_steps must be > 0 when set")
+        if self.keep_step_checkpoints <= 0:
+            raise ValueError("keep_step_checkpoints must be > 0")
+        self.force_checkpoint_steps = tuple(self.force_checkpoint_steps)
 
 
 @dataclass(slots=True)
