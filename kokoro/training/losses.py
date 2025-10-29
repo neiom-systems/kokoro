@@ -69,6 +69,8 @@ class MultiResolutionSTFTLoss(nn.Module):
         for stft_module in self.stfts:
             y_hat_mag, _ = stft_module.transform(prediction)
             y_mag, _ = stft_module.transform(target)
+            y_hat_mag = torch.nan_to_num(y_hat_mag, nan=0.0, posinf=0.0, neginf=0.0)
+            y_mag = torch.nan_to_num(y_mag, nan=0.0, posinf=0.0, neginf=0.0)
             sc = ((y_mag - y_hat_mag).norm(p="fro") / (y_mag.norm(p="fro") + 1e-7))
             mag = F.l1_loss(y_hat_mag, y_mag)
             sc_loss = sc_loss + sc
