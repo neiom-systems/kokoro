@@ -269,10 +269,16 @@ class TrainableKModel(nn.Module):
 
         autocast_active = torch.is_autocast_enabled()
         def _run_decoder(asr_t, f0_t, noise_t, style_t):
-            if autocast_active:
-                with torch.cuda.amp.autocast(enabled=False):
-                    return self.core.decoder(asr_t.float(), f0_t.float(), noise_t.float(), style_t.float())
-            return self.core.decoder(asr_t.float(), f0_t.float(), noise_t.float(), style_t.float())
+            decoder_inputs = (
+                asr_t.float(),
+                f0_t.float(),
+                noise_t.float(),
+                style_t.float(),
+            )
+            if autocast_active and torch.cuda.is_available():
+                with torch.amp.autocast("cuda", enabled=False):
+                    return self.core.decoder(*decoder_inputs)
+            return self.core.decoder(*decoder_inputs)
 
         if self._use_gradient_checkpointing and self.training:
             audio = checkpoint(
