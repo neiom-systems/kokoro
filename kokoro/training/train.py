@@ -631,19 +631,29 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
             saved_steps.append(step)
             if force:
                 force_steps.add(step)
-            # Remove old checkpoints if exceeding retention and not forced
-            while len(saved_steps) > cfg.runtime.keep_step_checkpoints:
-                oldest = saved_steps.pop(0)
-                if oldest in force_steps:
-                    saved_steps.insert(0, oldest)
-                    # If all retained checkpoints are forced, stop pruning
-                    if len(saved_steps) >= cfg.runtime.keep_step_checkpoints:
+
+            def prune_saved_steps() -> None:
+                while len(saved_steps) > cfg.runtime.keep_step_checkpoints:
+                    candidate = next(
+                        (
+                            s
+                            for s in saved_steps
+                            if s not in force_steps or (step >= 1000 and s == 10)
+                        ),
+                        None,
+                    )
+                    if candidate is None:
                         break
-                    continue
-                try:
-                    (ckpt_dir / f"step_{oldest}.pt").unlink()
-                except FileNotFoundError:
-                    pass
+                    saved_steps.remove(candidate)
+                    if candidate == 10 and step < 1000:
+                        saved_steps.append(candidate)
+                        break
+                    try:
+                        (ckpt_dir / f"step_{candidate}.pt").unlink()
+                    except FileNotFoundError:
+                        pass
+
+            prune_saved_steps()
 
         global_step, train_loss, stop_training = train_one_epoch(
             cfg=cfg,
