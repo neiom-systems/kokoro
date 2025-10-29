@@ -267,13 +267,24 @@ class TrainableKModel(nn.Module):
         )
         asr = text_hidden @ alignment
 
-        if self._use_gradient_checkpointing and self.training:
-            def _decoder_fn(asr_t, f0_t, noise_t, style_t):
-                return self.core.decoder(asr_t, f0_t, noise_t, style_t)
+        autocast_active = torch.is_autocast_enabled()
+        def _run_decoder(asr_t, f0_t, noise_t, style_t):
+            if autocast_active:
+                with torch.cuda.amp.autocast(enabled=False):
+                    return self.core.decoder(asr_t.float(), f0_t.float(), noise_t.float(), style_t.float())
+            return self.core.decoder(asr_t.float(), f0_t.float(), noise_t.float(), style_t.float())
 
-            audio = checkpoint(_decoder_fn, asr, f0_pred, noise_pred, decoder_style)
+        if self._use_gradient_checkpointing and self.training:
+            audio = checkpoint(
+                _run_decoder,
+                asr,
+                f0_pred,
+                noise_pred,
+                decoder_style,
+                use_reentrant=False,
+            )
         else:
-            audio = self.core.decoder(asr, f0_pred, noise_pred, decoder_style)
+            audio = _run_decoder(asr, f0_pred, noise_pred, decoder_style)
         if audio.dim() == 3 and audio.shape[1] == 1:
             audio = audio.squeeze(1)
 
