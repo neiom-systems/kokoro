@@ -237,6 +237,35 @@ class LuxembourgishDataset(torch.utils.data.Dataset):
                 f"{sample}{more}"
             )
 
+    def _apply_length_filter(self) -> None:
+        max_frames = self.data_config.max_mel_frames
+        if max_frames is None:
+            return
+        kept: List[MetadataEntry] = []
+        dropped = 0
+        for entry in self.entries:
+            cache_path = self._resolve_cache_path(entry)
+            try:
+                sample = load_cached_sample(cache_path)
+            except Exception as exc:
+                logger.warning("Failed to load cache %s for length filtering: %s", cache_path, exc)
+                kept.append(entry)
+                continue
+            frames = sample.mel.shape[1]
+            if frames <= max_frames:
+                kept.append(entry)
+            else:
+                dropped += 1
+        if dropped:
+            logger.info(
+                "Filtered out %d samples with > %d mel frames for split '%s'", dropped, max_frames, self.split
+            )
+        if not kept:
+            raise ValueError(
+                f"All samples exceeded max_mel_frames ({max_frames}). Reduce the threshold or regenerate caches."
+            )
+        self.entries = kept
+
     def _resolve_cache_path(self, entry: MetadataEntry) -> Path:
         for extension in FEATURE_EXTENSION_CANDIDATES:
             candidate = _build_cache_path(self.feature_root, self.split, entry.utt_id, extension)

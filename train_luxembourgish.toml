@@ -16,6 +16,7 @@ max_input_len = 510
 recompute_features = false
 use_cache = true
 forced_aligner = "mfa"
+max_mel_frames = 1200
 
 # F0 extraction configuration for faster processing
 [f0]
@@ -31,7 +32,7 @@ train_voice_pack = true
 voice_pack_lr = 5e-4
 disable_complex_decoder = false
 max_duration_frames = 50
-use_gradient_checkpointing = false
+use_gradient_checkpointing = true
 
 [optim]
 optimizer = "adamw"
@@ -44,7 +45,7 @@ warmup_steps = 1000
 min_lr = 1e-6
 grad_clip_norm = 1.0
 grad_accum_steps = 1
-use_amp = false
+use_amp = true
 
 [losses]
 lambda_dur = 1.0

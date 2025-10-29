@@ -143,6 +143,7 @@ class DataConfig:
     forced_aligner: str = "mfa"
     phoneme_inventory_path: Optional[Path] = None
     g2p_cache: Optional[Path] = None
+    max_mel_frames: Optional[int] = None
 
     def __post_init__(self) -> None:
         _ensure_positive("sample_rate", self.sample_rate)
@@ -156,6 +157,8 @@ class DataConfig:
         self.g2p_cache = _coerce_path(self.g2p_cache)
         if not (self.use_cache or self.recompute_features):
             raise ValueError("At least one of use_cache or recompute_features must be True")
+        if self.max_mel_frames is not None and self.max_mel_frames <= 0:
+            raise ValueError("max_mel_frames must be > 0 when set")
 
 
 @dataclass(slots=True)
