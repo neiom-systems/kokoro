@@ -25,7 +25,7 @@ min_f0 = 60.0
 max_f0 = 700.0
 
 [model]
-freeze_bert_epochs = 2
+freeze_bert_epochs = 1
 freeze_text_encoder_epochs = 1
 teacher_force_epochs = 1
 train_voice_pack = true
