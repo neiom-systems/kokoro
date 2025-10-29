@@ -116,9 +116,14 @@ class MelSpectrogramLoss(nn.Module):
             prediction = prediction.to(torch.float32)
         if target_mel.dtype != torch.float32:
             target_mel = target_mel.to(torch.float32)
+        autocast_active = torch.is_autocast_enabled()
         if prediction.dim() == 2:
             prediction = prediction.unsqueeze(1)
-        mel_pred = self.transform(prediction)
+        if autocast_active and torch.cuda.is_available():
+            with torch.amp.autocast("cuda", enabled=False):
+                mel_pred = self.transform(prediction)
+        else:
+            mel_pred = self.transform(prediction)
         if not torch.isfinite(mel_pred).all():
             raise RuntimeError("MelSpectrogramLoss received non-finite prediction; check model outputs.")
         mel_pred = torch.log(torch.clamp(mel_pred, min=1e-5))

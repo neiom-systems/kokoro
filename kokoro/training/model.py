@@ -291,6 +291,7 @@ class TrainableKModel(nn.Module):
             )
         else:
             audio = _run_decoder(asr, f0_pred, noise_pred, decoder_style)
+        audio = audio.float()
         if audio.dim() == 3 and audio.shape[1] == 1:
             audio = audio.squeeze(1)
 
