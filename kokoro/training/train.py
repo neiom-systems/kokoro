@@ -627,6 +627,7 @@ def train(config_path: Path, *, resume: Optional[Path] = None) -> None:
             ckpt_dir.mkdir(parents=True, exist_ok=True)
             torch.save(state, ckpt_dir / "latest.pt")
             torch.save(state, ckpt_dir / f"step_{step}.pt")
+            logger.info("Saved step checkpoint at step %d -> %s", step, ckpt_dir / f"step_{step}.pt")
             saved_steps.append(step)
             if force:
                 force_steps.add(step)
